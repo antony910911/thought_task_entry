@@ -17,7 +17,31 @@ const EXPR = {
   lookL: { eyes: 'normal', mouth: 'neutral', dc: -1 },
   lookR: { eyes: 'normal', mouth: 'neutral', dc: 1 },
   lookUp: { eyes: 'normal', mouth: 'neutral', dr: -1 },
+  sad: { eyes: 'normal', mouth: 'frown' },
 };
+
+// 配件（解鎖條件在 pet.js）。place：hat 戴頭頂、eyes 戴眼睛、side 別在頭的右上、left 別在左上
+export const ACCESSORY_SPRITES = {
+  party: { place: 'hat', rows: ['..Q..', '..p..', '.pcp.', '.cpc.', 'pcpcp'] },
+  crown: { place: 'hat', rows: ['q..q..q', 'qq.q.qq', 'qqqqqqq', 'qrqqqrq'] },
+  shades: { place: 'eyes', rows: ['kwkkk..kwkkk', 'kkkkkkkkkkkk', '.kkk....kkk.'] },
+  bow: { place: 'side', rows: ['pp.pp', 'ppxpp', 'pp.pp'] },
+  flower: { place: 'left', rows: ['.f.f.', 'ffoff', '.fff.', '..g..'] },
+};
+const ACCESSORY_COLORS = { Q: '#ffd60a', p: '#ff6fa8', c: '#5ac8fa', q: '#ffcc00', r: '#ff3b30', k: '#1c1c22', w: '#ffffff', x: '#d63c7a', f: '#ff9ec7', o: '#ffcc00', g: '#34c759' };
+
+function accessoryPos(def, id, ax, ay) {
+  const spr = ACCESSORY_SPRITES[id];
+  if (!spr) return null;
+  const w = spr.rows[0].length;
+  const h = spr.rows.length;
+  const top = def.anchor ? def.anchor.top : 3;
+  const eye = def.anchor ? def.anchor.eye : 6;
+  if (spr.place === 'hat') return { x: ax + 8 - Math.ceil(w / 2), y: ay + top - h + 1 };
+  if (spr.place === 'eyes') return { x: ax + 2, y: ay + eye };
+  if (spr.place === 'side') return { x: ax + 10, y: ay + top - 1 };
+  return { x: ax + 1, y: ay + top - 2 };
+}
 
 const UFO = ['....GGG....', '...GGGGG...', '.TSSSSSSST.', 'SSYSSYSSYSS', '..TTTTTTT..'];
 // 載人用的大飛碟（22 格寬），外星人坐在上面、頭罩在玻璃罩裡
@@ -40,6 +64,8 @@ const SPRITES = {
 
 const LINES = {
   poke: ['嗶！', '嘿！', '我在～', '幹嘛戳我', '!?', '嗶嗶？'],
+  hungry: ['肚子好餓…', '完成一件待辦餵我好嗎？', '寫篇筆記給我吃～', '咕嚕嚕…（肚子叫）'],
+  happy: ['今天好有精神！', '吃飽飽，想跳舞', '你今天好棒'],
   random: ['嗶嗶嗶～', '地球的咖啡好好喝', '想到什麼就丟給我', '我的飛碟停哪了…', '（偷看你的筆記）', '今天也要加油喔', '我會幫你記著的'],
 };
 
@@ -64,6 +90,7 @@ const STATUS = {
   cheer: '在幫你慶祝',
   ride: '開飛碟兜風中',
   swap: '換班中',
+  eat: '吃星星',
 };
 
 // 跨頁面保留狀態：回到首頁時 Blip 會接著做原本的事
@@ -112,12 +139,13 @@ function shade(hex, amount) {
 
 /** 有新的事情時，Blip 下次出現會先慶祝一下 */
 export function queueCheer(text) {
-  S.queue = { name: 'cheer', text, at: Date.now() };
+  S.queue = { name: 'eat', text, at: Date.now() };
 }
 
 /**
  * @param {HTMLElement} stage 舞台容器
- * @param {{ alien?: string, lines?: () => string[], status?: HTMLElement, counter?: HTMLElement, onSwap?: (id: string) => void }} opts
+ * @param {{ alien?: string, lines?: () => string[], mood?: () => string, accessory?: () => string|null,
+ *           status?: HTMLElement, counter?: HTMLElement, onSwap?: (id: string) => void }} opts
  */
 export function mountMascot(stage, opts = {}) {
   const canvas = document.createElement('canvas');
@@ -214,7 +242,8 @@ export function mountMascot(stage, opts = {}) {
   function contextLine() {
     const lines = (opts.lines && opts.lines()) || [];
     const own = character(S.alien).lines || [];
-    return pick(lines.length && Math.random() < 0.6 ? lines : LINES.random.concat(own, own));
+    const moodLines = opts.mood && opts.mood() === 'happy' ? LINES.happy : [];
+    return pick(lines.length && Math.random() < 0.6 ? lines : LINES.random.concat(own, own, moodLines));
   }
 
   function burst(kind, x, y, n, spread = 8) {
@@ -287,7 +316,7 @@ export function mountMascot(stage, opts = {}) {
       },
     },
     think: {
-      init: () => say(contextLine(), 3.4),
+      init: (a) => say(a.text || contextLine(), 3.4),
       tick: (a) => {
         frame.expr = a.t < 2.8 ? 'lookUp' : 'normal';
         return a.t > 3.6;
@@ -465,6 +494,32 @@ export function mountMascot(stage, opts = {}) {
         return a.t > 2;
       },
     },
+    // 吃星星：做完一件事，天上掉下一顆星星給他吃
+    eat: {
+      init: (a) => {
+        a.sy = -5;
+        a.phase = 'fall';
+        S.floating = false;
+      },
+      tick: (a, dt) => {
+        if (a.phase === 'fall') {
+          frame.expr = 'surprised';
+          a.sy += 42 * dt;
+          if (a.sy >= headTop() + 7) {
+            a.phase = 'yum';
+            a.pt = a.t;
+            S.vy = 30;
+            burst('spark', S.x, headTop() + 2, 4, 14);
+            say(a.text || '好吃！', 2.2);
+          }
+          return false;
+        }
+        frame.expr = 'happy';
+        frame.cheeks = true;
+        frame.arms = Math.floor((a.t - a.pt) / 0.25) % 2 ? 'up' : 'upR';
+        return a.t - a.pt > 1.8;
+      },
+    },
     // 開飛碟兜風：飛碟從旁邊滑進來把他載走，繞場幾圈後降落，他跳下來、飛碟離開
     ride: {
       init: (a) => {
@@ -578,7 +633,9 @@ export function mountMascot(stage, opts = {}) {
       return start(q.name, { text: q.text });
     }
     S.queue = null;
+    const mood = opts.mood ? opts.mood() : 'ok';
     if (Date.now() - S.lastInteract > 45_000 && Math.random() < 0.6) return start('sleep');
+    if ((mood === 'hungry' || mood === 'starving') && Math.random() < 0.25) return start('think', { text: pick(LINES.hungry) });
     const now = performance.now();
     const weights = reduceMotion
       ? { idle: 40, look: 20, think: 20 }
@@ -594,6 +651,8 @@ export function mountMascot(stage, opts = {}) {
           ufo: now > S.ufoCooldown ? 3 : 0,
           ride: now > S.rideCooldown ? 5 : 0,
           ...character(S.alien).weights,
+          ...(mood === 'happy' ? { dance: 12, jump: 10 } : {}),
+          ...(mood === 'starving' ? { dance: 0, jump: 0, ride: 0, idle: 40 } : {}),
         };
     let r = Math.random() * Object.values(weights).reduce((a, b) => a + b, 0);
     for (const [name, w] of Object.entries(weights)) {
@@ -744,6 +803,7 @@ export function mountMascot(stage, opts = {}) {
       pal.Y = '#ffd60a';
     }
     if (a && a.name === 'star' && a.phase === 'fall') drawMap(SPRITES.star, Math.round(a.sx) - 2, Math.round(a.sy));
+    if (a && a.name === 'eat' && a.phase === 'fall') drawMap(SPRITES.star, Math.round(S.x) - 2, Math.round(a.sy));
 
     const def = character(S.alien);
     const colors = paletteFor(S.alien);
@@ -783,6 +843,11 @@ export function mountMascot(stage, opts = {}) {
       pal.Y = '#ffd60a';
     } else {
       drawMap(rows, ax, ay, 1, colors);
+    }
+    const acc = opts.accessory && opts.accessory();
+    if (acc && frame.expr !== 'sleep') {
+      const pos = accessoryPos(def, acc, ax, ay);
+      if (pos) drawMap(ACCESSORY_SPRITES[acc].rows, pos.x, pos.y, 1, ACCESSORY_COLORS);
     }
     if (frame.saucer != null) {
       pal.Y = blink ? '#ffd60a' : '#ff9f0a';
@@ -834,6 +899,7 @@ export function mountMascot(stage, opts = {}) {
     }
 
     const now = performance.now();
+    if (frame.expr === 'normal' && opts.mood && ['hungry', 'starving'].includes(opts.mood())) frame.expr = 'sad';
     if (character(S.alien).float && !frame.riding) frame.legs = Math.floor(now / 320) % 2; // 觸手一直擺動
     if (frame.expr === 'normal') {
       if (now > S.blinkAt + 150) S.blinkAt = now + rand(1800, 4800);
@@ -889,6 +955,12 @@ export function mountMascot(stage, opts = {}) {
 
   return {
     stop: () => cancelAnimationFrame(raf),
+    /** 餵一顆星星（做完一件事時） */
+    feed: (text) => {
+      if (S.action?.name === 'swap') return queueCheer(text);
+      S.lastInteract = Date.now();
+      start('eat', { text });
+    },
     /** 直接做某個動作（除錯用） */
     play: (name) => ACTIONS[name] && start(name),
     /** 用光束換成另一隻外星人 */
@@ -898,6 +970,16 @@ export function mountMascot(stage, opts = {}) {
       start('swap', { to: id });
     },
   };
+}
+
+/** 嘴巴：沒有特別畫「難過」的角色，就把笑臉上下翻過來 */
+function mouthCells(def, name) {
+  if (def.mouths[name]) return def.mouths[name];
+  const smile = def.mouths.smile;
+  const rows = smile.map(([r]) => r);
+  const lo = Math.min(...rows);
+  const hi = Math.max(...rows);
+  return smile.map(([r, c]) => [r === lo ? hi : lo, c]);
 }
 
 /** 依目前的動作組出 16×16 的像素圖 */
@@ -914,7 +996,7 @@ function composeAlien(def, f, now) {
     set(rr, c + dc, ch);
     if (def.mirror !== false) set(rr, 15 - c + dc, ch);
   }
-  for (const [r, c] of def.mouths[ex.mouth]) set(r, c, 'M');
+  for (const [r, c] of mouthCells(def, ex.mouth)) set(r, c, 'M');
   if (f.cheeks) for (const [r, c] of def.cheeks) set(r, c, 'P');
   for (const [r, c] of def.arms[f.arms] || def.arms.down) set(r, c, def.armChar || 'B');
   if (Math.floor(now / 700) % 3 === 0) for (const [r, c] of def.glow) set(r, c, 'Y');
@@ -922,22 +1004,48 @@ function composeAlien(def, f, now) {
 }
 
 /** 在小 canvas 上畫出角色的立繪（選角色用） */
-export function drawAlienPreview(canvas, id) {
+export function drawAlienPreview(canvas, id, accessory = null) {
   const cs = getComputedStyle(document.documentElement);
   const get = (name, fallback) => cs.getPropertyValue(name).trim() || fallback;
   const def = character(id);
   const c = def.colors({ todo: get('--todo', '#34c759'), note: get('--note', '#ff9f0a') });
   const colors = { E: '#15131f', W: '#ffffff', M: '#15131f', P: '#ff8fab', Y: '#ffd60a', G: '#a5e4ff', S: '#c9ccd6', T: '#8d92a3', D: shade(c.B, -0.32), L: shade(c.B, 0.38), ...c };
+  // 上面留 4 格給帽子
+  const pad = accessory ? 4 : 0;
   canvas.width = 16;
-  canvas.height = 16;
+  canvas.height = 16 + pad;
   const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, 16, 16);
-  const rows = composeAlien(def, { expr: 'happy', arms: 'upR', cheeks: true }, 1);
-  rows.forEach((row, r) =>
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const paint = (rows, ox, oy, pal) =>
+    rows.forEach((row, r) =>
+      [...row].forEach((ch, x) => {
+        if (ch === '.') return;
+        ctx.fillStyle = pal[ch] || ch;
+        ctx.fillRect(ox + x, oy + r, 1, 1);
+      })
+    );
+  paint(composeAlien(def, { expr: 'happy', arms: 'upR', cheeks: true }, 1), 0, pad, colors);
+  if (accessory) {
+    const pos = accessoryPos(def, accessory, 0, pad);
+    if (pos) paint(ACCESSORY_SPRITES[accessory].rows, pos.x, pos.y, ACCESSORY_COLORS);
+  }
+}
+
+/** 只畫配件本身（解鎖清單用） */
+export function drawAccessory(canvas, id) {
+  const spr = ACCESSORY_SPRITES[id];
+  const size = Math.max(spr.rows[0].length, spr.rows.length) + 2;
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, size, size);
+  const ox = Math.floor((size - spr.rows[0].length) / 2);
+  const oy = Math.floor((size - spr.rows.length) / 2);
+  spr.rows.forEach((row, r) =>
     [...row].forEach((ch, x) => {
       if (ch === '.') return;
-      ctx.fillStyle = colors[ch] || ch;
-      ctx.fillRect(x, r, 1, 1);
+      ctx.fillStyle = ACCESSORY_COLORS[ch];
+      ctx.fillRect(ox + x, oy + r, 1, 1);
     })
   );
 }

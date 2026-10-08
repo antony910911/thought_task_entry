@@ -10,7 +10,7 @@ function localStamp(d) {
 }
 
 export function shortcutPayload(ev) {
-  return {
+  const payload = {
     title: ev.title,
     start: localStamp(ev.start),
     end: localStamp(ev.end),
@@ -18,6 +18,9 @@ export function shortcutPayload(ev) {
     location: ev.location || '',
     notes: [ev.notes, (ev.tags || []).map((t) => '#' + t).join(' ')].filter(Boolean).join('\n'),
   };
+  // 修改行程時附上舊的標題與時間，進階版捷徑可以先找到舊行程刪掉（見 README）
+  if (ev.replace) payload.replace = { title: ev.replace.title, start: localStamp(new Date(ev.replace.start)) };
+  return payload;
 }
 
 export function shortcutUrl(ev, shortcutName) {
@@ -27,6 +30,13 @@ export function shortcutUrl(ev, shortcutName) {
     text: JSON.stringify(shortcutPayload(ev)),
   });
   // iOS 捷徑不吃 URLSearchParams 的「+」空白，改成 %20
+  return `shortcuts://run-shortcut?${params.toString().replace(/\+/g, '%20')}`;
+}
+
+/** 有截止日的待辦 → iOS「提醒事項」（透過捷徑「加入提醒」，見 README） */
+export function remindersUrl(todos, shortcutName, time = '09:00') {
+  const items = todos.map((t) => ({ title: t.title, due: `${t.due} ${time}`, notes: t.note || '' }));
+  const params = new URLSearchParams({ name: shortcutName || '加入提醒', input: 'text', text: JSON.stringify({ items }) });
   return `shortcuts://run-shortcut?${params.toString().replace(/\+/g, '%20')}`;
 }
 

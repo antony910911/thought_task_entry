@@ -2,7 +2,9 @@ import { db, save, uid, replaceAll } from './store.js';
 import { parseEvent, formatRange, formatDate, formatTime } from './parser.js';
 import { icon } from './icons.js';
 import { THEMES, MODES, themeById, applyTheme, effectiveMode } from './themes.js';
-import { mountMascot, queueCheer, drawAlienPreview } from './mascot.js';
+import { mountMascot, queueCheer, drawAlienPreview, drawAccessory } from './mascot.js';
+import { classify } from './capture.js';
+import { visit as petVisit, gain as petGain, energyNow, mood as petMood, levelInfo, ACCESSORIES, GAINS, MOOD_TEXT } from './pet.js';
 import { ALIENS, character } from './aliens.js';
 import * as todoSync from './sync/todo.js';
 import * as ms from './sync/microsoft.js';
@@ -12,7 +14,8 @@ const $app = document.getElementById('app');
 const DRAFT_KEY = 'tte.noteDraft';
 const WEEK = '日一二三四五六';
 let refreshCurrent = null; // 同步完成後只刷新目前頁面的局部區塊，避免清掉正在輸入的內容
-const ui = { todoTab: 'open', noteTag: '', noteQuery: '' };
+const ui = { todoTab: 'open', noteTag: '', noteQuery: '', capture: '' };
+let liveMascot = null; // 首頁正在顯示的外星人
 
 // ---------- 共用小工具 ----------
 
@@ -210,25 +213,64 @@ function autosize(el, min = 0) {
 
 const onenoteReady = () => ms.isSignedIn() && Boolean(settings().onenote.sectionId);
 
+/** 送到專案管理工具：沒送過就是「新增」，送過了就是「更新」（改內容、勾選完成都算） */
 async function syncTodo(todo) {
   if (!todoSync.isConfigured(settings())) {
     todo.sync = { status: 'off' };
     save();
     return todo.sync;
   }
-  todo.sync = { status: 'pending' };
+  const prev = todo.sync || {};
+  const type = prev.at ? 'todo.updated' : 'todo.created';
+  todo.sync = { ...prev, status: 'pending', error: undefined };
   save();
   refreshCurrent?.();
   try {
-    const remoteId = await todoSync.sendTodo(todo, settings());
-    todo.sync = { status: 'ok', at: new Date().toISOString(), remoteId };
+    const remoteId = await todoSync.sendTodo(todo, settings(), type);
+    todo.sync = { status: 'ok', at: new Date().toISOString(), remoteId: remoteId || prev.remoteId || null };
   } catch (e) {
-    todo.sync = { status: 'error', error: e.message };
+    todo.sync = { ...prev, status: 'error', error: e.message };
   }
   save();
   refreshCurrent?.();
   return todo.sync;
 }
+
+function deleteTodo(todo) {
+  db().todos = db().todos.filter((t) => t !== todo);
+  save();
+  // 送過的才需要通知對方刪除；失敗也不擋
+  if (todoSync.isConfigured(settings()) && todo.sync && todo.sync.at)
+    todoSync.sendTodo(todo, settings(), 'todo.deleted').catch(() => {});
+}
+
+/** 有截止日的待辦也丟到 iPhone「提醒事項」（設定裡打開才會） */
+function remindTodos(todos) {
+  const r = settings().reminders;
+  const withDue = todos.filter((t) => t.due && !t.done);
+  if (!r.enabled || !withDue.length) return;
+  setTimeout(() => (location.href = cal.remindersUrl(withDue, r.shortcutName, r.time)), 400);
+}
+
+// ---------- 養成 ----------
+
+/** 做了一件事：外星人吃一顆星星，可能升級或解鎖配件 */
+function reward(kind, text) {
+  const pet = db().pet;
+  const r = petGain(pet, kind);
+  save();
+  let line = text;
+  if (r.levelUp) line = `升到 Lv.${r.levelUp} 了！`;
+  if (r.unlocked.length) {
+    line = `解鎖了${r.unlocked.map((a) => a.name).join('、')}！`;
+    toast(`解鎖新配件：${r.unlocked.map((a) => a.name).join('、')}（到小屋穿上）`);
+  }
+  if (liveMascot && document.getElementById('stage')) liveMascot.feed(line);
+  else queueCheer(line);
+  return r;
+}
+
+const pick = (list) => list[Math.floor(Math.random() * list.length)];
 
 async function syncNote(note) {
   note.sync = { status: 'pending' };
@@ -291,12 +333,17 @@ function bindTodoList(root, rerender) {
       todo.done = !todo.done;
       todo.doneAt = todo.done ? new Date().toISOString() : null;
       save();
+      todo.updatedAt = new Date().toISOString();
       li.classList.toggle('done', todo.done); // 先播勾選動畫，再重排
-      if (todo.done) queueCheer(['完成一件！太強了', '又少一件～', '好耶！清掉了', '做得好！'][Math.floor(Math.random() * 4)]);
+      if (todo.done && !todo.rewarded) {
+        todo.rewarded = true; // 同一件只獎勵一次，避免來回勾選刷經驗
+        reward('todo.done', pick(['完成一件！太強了', '又少一件～', '好耶！清掉了', '做得好！']));
+      }
+      if (todoSync.isConfigured(settings()) && todo.sync && todo.sync.at) syncTodo(todo);
       setTimeout(rerender, 450);
       return;
     }
-    const actions = [];
+    const actions = [{ label: '編輯', run: () => (location.hash = `#/todo/edit/${todo.id}`) }];
     if (todoSync.isConfigured(settings()) && (!todo.sync || todo.sync.status !== 'ok'))
       actions.push({
         label: '重新同步',
@@ -306,8 +353,7 @@ function bindTodoList(root, rerender) {
       label: '刪除',
       danger: true,
       run: () => {
-        db().todos = db().todos.filter((t) => t !== todo);
-        save();
+        deleteTodo(todo);
         rerender();
       },
     });
@@ -318,6 +364,129 @@ function bindTodoList(root, rerender) {
 
 // ---------- 首頁 ----------
 
+function upcomingHtml() {
+  const now = new Date();
+  const upcoming = db()
+    .events.filter((e) => new Date(e.end) >= now)
+    .sort((a, b) => new Date(a.start) - new Date(b.start))
+    .slice(0, 3);
+  if (!upcoming.length) return `<div class="up-empty">一句話加入行事曆，例如「明天 14:00 開會」</div>`;
+  return upcoming
+    .map((e) => {
+      const s = new Date(e.start);
+      const d = dayDiff(s);
+      const when = d === 0 ? '今天' : d === 1 ? '明天' : `${s.getMonth() + 1}/${s.getDate()}（${WEEK[s.getDay()]}）`;
+      return `<div class="up-row"><span class="bar"></span><div class="t"><b>${esc(e.title)}</b>
+        <small>${when}${e.allDay ? ' 全天' : ' ' + formatTime(s)}${e.location ? ` · ${esc(e.location)}` : ''}</small></div></div>`;
+    })
+    .join('');
+}
+
+function petChip() {
+  const pet = db().pet;
+  const energy = energyNow(pet);
+  return `<span class="lv">Lv.${levelInfo(pet.xp).level}</span>
+    <span class="meter ${petMood(energy)}" title="能量 ${energy}"><i style="width:${energy}%"></i></span>
+    <span class="streak">${icon('flame')}${pet.streak}</span>`;
+}
+
+/** 首頁的萬用輸入「丟給 Blip」 */
+function bindCapture(refreshHome) {
+  const form = document.getElementById('capture');
+  const input = document.getElementById('captureInput');
+  const hint = document.getElementById('captureHint');
+  const send = document.getElementById('captureSend');
+  const segs = document.querySelectorAll('#captureType button');
+  let forced = null;
+  let result = null;
+
+  const update = () => {
+    autosize(input, 44);
+    ui.capture = input.value;
+    const text = input.value.trim();
+    if (!text) forced = null;
+    result = text ? classify(text, { force: forced, defaultDuration: Number(settings().calendar.defaultDuration) }) : null;
+    segs.forEach((b) => {
+      b.classList.toggle('on', Boolean(result) && b.dataset.type === result.type);
+      b.classList.toggle('forced', b.dataset.type === forced);
+    });
+    send.disabled = !result || !result.ok;
+    form.classList.toggle('has-text', Boolean(text));
+    if (!result) return (hint.textContent = '');
+    const tagText = result.tags && result.tags.length ? ` · ${result.tags.map((t) => '#' + t).join(' ')}` : '';
+    if (result.type === 'event') {
+      hint.textContent = result.ok
+        ? `會加進行事曆：${formatRange(result.event)}${result.event.location ? ` @${result.event.location}` : ''}「${result.event.title}」`
+        : result.errors[0];
+      hint.className = `capture-hint ${result.ok ? '' : 'bad'}`;
+    } else if (result.type === 'todo') {
+      const due = dueInfo(result.due);
+      hint.textContent = `會新增待辦：${result.title}${due ? ` · 截止 ${due.text}` : ''}${result.priority === 'high' ? ' · 高優先' : ''}${tagText}`;
+      hint.className = 'capture-hint';
+    } else {
+      hint.textContent = `會存成筆記${result.title ? `「${result.title}」` : ''}${tagText}${onenoteReady() ? ' · 自動送到 OneNote' : ''}`;
+      hint.className = 'capture-hint';
+    }
+  };
+
+  document.getElementById('captureType').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    forced = forced === b.dataset.type ? null : b.dataset.type;
+    update();
+    input.focus();
+  });
+  document.getElementById('pasteBtn').addEventListener('click', async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text.trim()) return toast('剪貼簿是空的', 'error');
+      input.value = input.value.trim() ? `${input.value.trim()}\n${text.trim()}` : text.trim();
+      update();
+      input.focus();
+    } catch {
+      toast('讀不到剪貼簿，請長按輸入框選「貼上」', 'error');
+    }
+  });
+  input.addEventListener('input', update);
+  input.addEventListener('keydown', (e) => {
+    // 單行時按 Enter 直接送出；Shift+Enter 換行
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229 && !input.value.includes('\n')) {
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (!result || !result.ok) return;
+    const r = result;
+    if (r.type === 'todo') {
+      createTodos([{ title: r.title, due: r.due, priority: r.priority, tags: r.tags }], { silent: true });
+      toast('已加入待辦');
+    } else if (r.type === 'note') {
+      const now = new Date().toISOString();
+      const note = { id: uid(), title: r.title, content: r.content, tags: r.tags, createdAt: now, updatedAt: now, sync: { status: 'off' } };
+      db().notes.push(note);
+      save();
+      reward('note.add', pick(['筆記收到！', '記下來了！']));
+      if (onenoteReady())
+        syncNote(note).then((s) => toast(s.status === 'ok' ? '筆記已送到 OneNote' : `筆記已存，OneNote 送出失敗：${s.error}`, s.status === 'ok' ? 'ok' : 'error'));
+      else toast('已存成筆記');
+    } else {
+      addEvent(r.event, r.text, () => {});
+    }
+    input.value = '';
+    forced = null;
+    update();
+    refreshHome();
+  });
+
+  if (ui.capture) {
+    input.value = ui.capture;
+    update();
+  }
+}
+
 function viewHome() {
   const now = new Date();
   const todos = db().todos;
@@ -326,10 +495,6 @@ function viewHome() {
     .filter((t) => (t.due && dueInfo(t.due).diff <= 0) || t.priority === 'high')
     .sort((a, b) => (a.due || '9').localeCompare(b.due || '9'))
     .slice(0, 4);
-  const upcoming = db()
-    .events.filter((e) => new Date(e.end) >= now)
-    .sort((a, b) => new Date(a.start) - new Date(b.start))
-    .slice(0, 3);
   const pending = pendingCount();
 
   $app.innerHTML = `
@@ -346,17 +511,30 @@ function viewHome() {
         <div class="stage" id="stage"></div>
         <div class="stage-cap">
           <button class="alien-switch" id="alienSwitch" aria-label="換外星人"><b>${esc(character(settings().appearance.alien).name)}</b>${icon('chevronUpDown')}</button>
-          <span id="blipStatus"></span><span class="pokes" id="blipPokes"></span>
+          <span id="blipStatus"></span>
+          <a class="pet-link" id="petChip" href="#/pet" aria-label="小屋">${petChip()}</a>
         </div>
       </section>
 
+      <form class="capture" id="capture" autocomplete="off">
+        <textarea id="captureInput" rows="1" placeholder="丟給 ${esc(character(settings().appearance.alien).name)}：想到什麼都可以打…" enterkeyhint="send"></textarea>
+        <div class="capture-foot">
+          <div class="seg capture-type" id="captureType">
+            <button type="button" data-type="todo">待辦</button><button type="button" data-type="note">筆記</button><button type="button" data-type="event">行程</button>
+          </div>
+          <button type="button" class="capsule" id="pasteBtn" aria-label="貼上">${icon('clipboard')}貼上</button>
+          <button type="submit" class="send-btn" id="captureSend" aria-label="送出" disabled>${icon('send')}</button>
+        </div>
+        <p class="capture-hint" id="captureHint"></p>
+      </form>
+
       <div class="tiles">
         <a class="tile" href="#/todo" style="${featureVars('todo')}">
-          <div class="tile-head"><span class="tile-icon">${icon('checklist')}</span><span class="tile-count">${open.length}</span></div>
+          <div class="tile-head"><span class="tile-icon">${icon('checklist')}</span><span class="tile-count" id="todoCount">${open.length}</span></div>
           <div class="tile-name">待辦事項<small>${open.length ? `${open.length} 件未完成` : '寫下要做的事'}</small></div>
         </a>
         <a class="tile" href="#/notes" style="${featureVars('note')}">
-          <div class="tile-head"><span class="tile-icon">${icon('note')}</span><span class="tile-count">${db().notes.length}</span></div>
+          <div class="tile-head"><span class="tile-icon">${icon('note')}</span><span class="tile-count" id="noteCount">${db().notes.length}</span></div>
           <div class="tile-name">筆記<small>${db().notes.length ? '寫下想法・送到 OneNote' : '開始第一篇筆記'}</small></div>
         </a>
         <a class="tile wide" href="#/events" style="${featureVars('event')}">
@@ -365,20 +543,7 @@ function viewHome() {
             <span class="tile-name">行程</span>
             ${icon('chevronRight', 'chev')}
           </div>
-          <div class="upcoming">
-            ${
-              upcoming.length
-                ? upcoming
-                    .map((e) => {
-                      const s = new Date(e.start);
-                      const d = dayDiff(s);
-                      const when = d === 0 ? '今天' : d === 1 ? '明天' : `${s.getMonth() + 1}/${s.getDate()}（${WEEK[s.getDay()]}）`;
-                      return `<div class="up-row"><span class="bar"></span><div class="t"><b>${esc(e.title)}</b>
-                        <small>${when}${e.allDay ? ' 全天' : ' ' + formatTime(s)}${e.location ? ` · ${esc(e.location)}` : ''}</small></div></div>`;
-                    })
-                    .join('')
-                : `<div class="up-empty">一句話加入行事曆，例如「明天 14:00 開會」</div>`
-            }
+          <div class="upcoming" id="upcoming">${upcomingHtml()}
           </div>
         </a>
       </div>
@@ -412,7 +577,8 @@ function viewHome() {
       if (name) name.textContent = character(id).name;
     },
     status: document.getElementById('blipStatus'),
-    counter: document.getElementById('blipPokes'),
+    mood: () => petMood(energyNow(db().pet)),
+    accessory: () => db().pet.equipped,
     lines: () => {
       const list = [];
       const openNow = db().todos.filter((t) => !t.done);
@@ -430,6 +596,14 @@ function viewHome() {
       return list;
     },
   });
+  liveMascot = mascot;
+  bindCapture(() => {
+    const openNow = db().todos.filter((t) => !t.done).length;
+    document.getElementById('todoCount').textContent = openNow;
+    document.getElementById('noteCount').textContent = db().notes.length;
+    document.getElementById('upcoming').innerHTML = upcomingHtml();
+    document.getElementById('petChip').innerHTML = petChip();
+  });
   try {
     if (localStorage.getItem('beamup.debug')) window.beamupMascot = mascot; // 除錯：在主控台呼叫 beamupMascot.play('ride')
   } catch {}
@@ -444,62 +618,155 @@ function viewHome() {
 
 // ---------- 待辦事項 ----------
 
-function viewTodo() {
+/** 新增一批待辦：存起來、同步、餵外星人、需要的話丟到提醒事項 */
+function createTodos(items, { silent = false } = {}) {
+  const configured = todoSync.isConfigured(settings());
+  const now = new Date().toISOString();
+  const created = items.map((t) => ({
+    id: uid(),
+    title: t.title,
+    note: t.note || '',
+    due: t.due || null,
+    priority: t.priority || 'normal',
+    tags: t.tags || [],
+    done: false,
+    createdAt: now,
+    updatedAt: now,
+    sync: { status: configured ? 'pending' : 'off' },
+  }));
+  db().todos.push(...created);
+  save();
+  reward('todo.add', created.length > 1 ? `收到 ${created.length} 件待辦！` : pick(['收到待辦！', '記下來了！', '交給我！']));
+  if (!configured && !silent) toast(`已加入 ${created.length} 件待辦`);
+  Promise.all(created.map(syncTodo)).then((results) => {
+    const failed = results.filter((s) => s && s.status === 'error');
+    if (failed.length) toast(`同步失敗：${failed[0].error}`, 'error');
+    else if (configured) toast(`已加入並同步 ${created.length} 件`);
+  });
+  remindTodos(created);
+  return created;
+}
+
+function viewTodo(editId = null) {
   const configured = todoSync.isConfigured(settings());
   const openCount = () => db().todos.filter((t) => !t.done).length;
-  let priority = 'normal';
+  const editing = editId ? db().todos.find((t) => t.id === editId) : null;
+  if (editId && !editing) {
+    location.hash = '#/todo/list';
+    return;
+  }
+  let priority = editing ? editing.priority : 'normal';
+  const prioBtn = (p, label) => `<button type="button" data-p="${p}" class="${priority === p ? 'on' : ''}">${label}</button>`;
 
   $app.innerHTML = `
     ${nav({
-      back: '#/',
-      backLabel: 'Beamup',
-      title: '待辦事項',
-      actions: `<a class="pill-btn" href="#/todo/list">${icon('list')}清單<span class="count" id="count">${openCount()}</span></a>`,
+      back: editing ? '#/todo/list' : '#/',
+      backLabel: editing ? '清單' : 'Beamup',
+      title: editing ? '編輯待辦' : '待辦事項',
+      actions: editing
+        ? `<button class="icon-btn" id="del" aria-label="刪除">${icon('trash')}</button>`
+        : `<a class="pill-btn" href="#/todo/list">${icon('list')}清單<span class="count" id="count">${openCount()}</span></a>`,
     })}
     <main class="page" style="${featureVars('todo')}">
-      <h1 class="large-title">待辦事項</h1>
+      <h1 class="large-title">${editing ? '編輯待辦' : '待辦事項'}</h1>
       <form id="form">
         <div class="composer">
-          <textarea name="title" rows="1" placeholder="新增待辦…" enterkeyhint="enter" required></textarea>
-          <div class="composer-foot"><span>一行一件，可一次輸入多件</span></div>
+          <textarea name="title" rows="1" placeholder="${editing ? '待辦內容' : '新增待辦…'}" enterkeyhint="enter" required>${editing ? esc(editing.title) : ''}</textarea>
+          <div class="composer-foot"><span>${editing ? (editing.done ? '已完成' : '未完成') : '一行一件，可一次輸入多件'}</span></div>
         </div>
 
         <ul class="group icons" style="margin-top:16px">
           <li class="cell">
             <span class="cell-icon" style="--c: var(--event); --on-c: var(--on-event)">${icon('calendar')}</span>
             <span class="cell-label">截止日</span>
-            <label class="value-pill empty-val" id="duePill"><span id="dueText">未設定</span><input type="date" name="due" aria-label="截止日"></label>
+            <label class="value-pill empty-val" id="duePill"><span id="dueText">未設定</span><input type="date" name="due" aria-label="截止日" value="${editing && editing.due ? editing.due : ''}"></label>
+            <button type="button" class="icon-btn plain small" id="clearDue" aria-label="清除截止日" hidden>${icon('xmark')}</button>
           </li>
           <li class="cell">
             <span class="cell-icon" style="--c: var(--note); --on-c: var(--on-note)">${icon('flag')}</span>
             <span class="cell-label">優先度</span>
-            <div class="seg small" id="prio">
-              <button type="button" data-p="low">低</button><button type="button" data-p="normal" class="on">一般</button><button type="button" data-p="high">高</button>
-            </div>
+            <div class="seg small" id="prio">${prioBtn('low', '低')}${prioBtn('normal', '一般')}${prioBtn('high', '高')}</div>
           </li>
           <li class="cell">
             <span class="cell-icon" style="--c: var(--todo); --on-c: var(--on-todo)">${icon('tag')}</span>
-            <input name="tags" placeholder="標籤（空白分隔）" autocomplete="off">
+            <input name="tags" placeholder="標籤（空白分隔）" autocomplete="off" value="${editing ? esc(editing.tags.join(' ')) : ''}">
           </li>
           <li class="cell">
             <span class="cell-icon" style="--c: var(--gray)">${icon('text')}</span>
-            <input name="note" placeholder="備註" autocomplete="off">
+            <input name="note" placeholder="備註" autocomplete="off" value="${editing ? esc(editing.note) : ''}">
           </li>
         </ul>
 
-        <button class="btn btn-primary" type="submit" style="margin-top:20px">${icon(configured ? 'send' : 'plus')}${configured ? '新增並同步' : '新增'}</button>
+        <button class="btn btn-primary" type="submit" style="margin-top:20px">${
+          editing ? `${icon('check')}儲存修改` : `${icon(configured ? 'send' : 'plus')}${configured ? '新增並同步' : '新增'}`
+        }</button>
       </form>
-      ${configured ? '' : `<p class="caption">尚未連結專案管理工具，待辦只會存在 App 內 · <a href="#/settings">設定</a></p>`}
+      ${
+        editing
+          ? `<p class="caption">${configured && editing.sync && editing.sync.at ? '儲存後會同步更新到專案管理工具' : '只會改 App 裡的這一筆'}</p>`
+          : configured
+            ? ''
+            : `<p class="caption">尚未連結專案管理工具，待辦只會存在 App 內 · <a href="#/settings">設定</a></p>`
+      }
 
-      <h2 class="group-header big">最近新增<a href="#/todo/list">全部</a></h2>
-      <ul class="group rows" id="recent"></ul>
+      ${editing ? '' : `<h2 class="group-header big">最近新增<a href="#/todo/list">全部</a></h2><ul class="group rows" id="recent"></ul>`}
     </main>`;
 
   const form = document.getElementById('form');
-  const recent = document.getElementById('recent');
   const titleEl = form.title;
   const dueInput = form.due;
 
+  const renderDue = () => {
+    const info = dueInfo(dueInput.value);
+    document.getElementById('dueText').textContent = info ? `${dueInput.value.replace(/-/g, '/')}（${info.text}）` : '未設定';
+    document.getElementById('duePill').classList.toggle('empty-val', !info);
+    document.getElementById('clearDue').hidden = !info;
+  };
+  dueInput.addEventListener('change', renderDue);
+  document.getElementById('clearDue').addEventListener('click', () => {
+    dueInput.value = '';
+    renderDue();
+  });
+  renderDue();
+
+  document.getElementById('prio').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    priority = b.dataset.p;
+    document.querySelectorAll('#prio button').forEach((x) => x.classList.toggle('on', x === b));
+  });
+  titleEl.addEventListener('input', () => autosize(titleEl, 56));
+  autosize(titleEl, 56);
+
+  if (editing) {
+    document.getElementById('del').addEventListener('click', () =>
+      sheet([{ label: '刪除這件待辦', danger: true, run: () => (deleteTodo(editing), toast('已刪除'), (location.hash = '#/todo/list')) }])
+    );
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const f = new FormData(form);
+      const title = String(f.get('title')).replace(/\s*\n\s*/g, ' ').trim();
+      if (!title) return toast('待辦內容不能是空的', 'error');
+      const dueBefore = editing.due;
+      Object.assign(editing, {
+        title,
+        due: f.get('due') || null,
+        priority,
+        tags: splitTags(f.get('tags')),
+        note: String(f.get('note')).trim(),
+        updatedAt: new Date().toISOString(),
+      });
+      save();
+      if (todoSync.isConfigured(settings()) && editing.sync && (editing.sync.at || editing.sync.status === 'error')) syncTodo(editing);
+      toast('已儲存');
+      if (editing.due && editing.due !== dueBefore) remindTodos([editing]);
+      location.hash = '#/todo/list';
+    });
+    titleEl.focus();
+    return;
+  }
+
+  const recent = document.getElementById('recent');
   const renderRecent = () => {
     const items = [...db().todos].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5);
     recent.innerHTML = items.length
@@ -511,51 +778,26 @@ function viewTodo() {
   renderRecent();
   bindTodoList(recent, renderRecent);
 
-  const renderDue = () => {
-    const info = dueInfo(dueInput.value);
-    document.getElementById('dueText').textContent = info ? `${dueInput.value.replace(/-/g, '/')}（${info.text}）` : '未設定';
-    document.getElementById('duePill').classList.toggle('empty-val', !info);
-  };
-  dueInput.addEventListener('change', renderDue);
-
-  document.getElementById('prio').addEventListener('click', (e) => {
-    const b = e.target.closest('button');
-    if (!b) return;
-    priority = b.dataset.p;
-    document.querySelectorAll('#prio button').forEach((x) => x.classList.toggle('on', x === b));
-  });
-
-  titleEl.addEventListener('input', () => autosize(titleEl, 56));
-
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const f = new FormData(form);
     const titles = String(f.get('title')).split('\n').map((s) => s.trim()).filter(Boolean);
     if (!titles.length) return;
-    const created = titles.map((title) => ({
-      id: uid(),
-      title,
-      note: String(f.get('note')).trim(),
-      due: f.get('due') || null,
-      priority,
-      tags: splitTags(f.get('tags')),
-      done: false,
-      createdAt: new Date().toISOString(),
-      sync: { status: configured ? 'pending' : 'off' },
-    }));
-    db().todos.push(...created);
-    save();
+    createTodos(
+      titles.map((title) => ({
+        title,
+        note: String(f.get('note')).trim(),
+        due: f.get('due') || null,
+        priority,
+        tags: splitTags(f.get('tags')),
+      }))
+    );
     form.reset();
+    priority = 'normal';
+    document.querySelectorAll('#prio button').forEach((x) => x.classList.toggle('on', x.dataset.p === 'normal'));
     autosize(titleEl, 56);
     renderDue();
     renderRecent();
-    if (!configured) toast(`已加入 ${created.length} 件待辦`);
-    Promise.all(created.map(syncTodo)).then((results) => {
-      const failed = results.filter((s) => s && s.status === 'error');
-      if (failed.length) toast(`同步失敗：${failed[0].error}`, 'error');
-      else if (configured) toast(`已加入並同步 ${created.length} 件`);
-      queueCheer(failed.length ? '有待辦沒傳出去，等等再試' : `收到 ${created.length} 件待辦！`);
-    });
   });
   titleEl.focus();
 }
@@ -823,6 +1065,7 @@ function viewNoteEditor(id) {
       if (changed && target.sync && target.sync.status === 'ok') target.editedAfterSync = true;
     } else {
       target = { id: uid(), title, content, tags: [...tags], createdAt: now, updatedAt: now, sync: { status: 'off' } };
+      reward('note.add', pick(['筆記收到！', '好有內容～', '記下來了！']));
       db().notes.push(target);
       localStorage.removeItem(DRAFT_KEY);
     }
@@ -846,7 +1089,6 @@ function viewNoteEditor(id) {
     const result = await syncNote(saved);
     if (result.status === 'ok') {
       toast('已送到 OneNote');
-      queueCheer('筆記傳上 OneNote 了！');
       if (existing) location.hash = '#/notes/list';
       else if (/^#\/notes(\/new)?$/.test(location.hash)) viewNoteEditor(null); // 換成空白新筆記
       else location.hash = '#/notes/new';
@@ -1062,8 +1304,66 @@ function datebox(d, mini = false) {
   return `<div class="datebox${mini ? ' mini' : ''}"><small>${d.getMonth() + 1}月</small><b>${d.getDate()}</b>${mini ? '' : `<span>週${WEEK[d.getDay()]}</span>`}</div>`;
 }
 
+const toEvent = (r) => ({ ...r, start: new Date(r.start), end: new Date(r.end), tags: r.tags || [] });
+
+/**
+ * 依設定寫進行事曆。修改行程時：Outlook 會直接更新原本那筆；
+ * 捷徑／.ics 只能再新增一筆，會附上舊行程資訊給進階版捷徑刪除舊的。
+ */
+async function deliverEvent(ev, record, onChange = () => {}) {
+  const cfg = settings().calendar;
+  try {
+    if (cfg.mode === 'outlook') {
+      record.sync = { ...record.sync, status: 'pending' };
+      onChange();
+      const remoteId =
+        ev.replace && record.sync.remoteId
+          ? await ms.updateOutlookEvent(record.sync.remoteId, ev, settings())
+          : await ms.createOutlookEvent(ev, settings());
+      record.sync = { status: 'ok', at: new Date().toISOString(), remoteId };
+      toast(ev.replace ? '已更新 Outlook 行事曆' : '已加入 Outlook 行事曆');
+    } else if (cfg.mode === 'ics') {
+      cal.openIcs(ev, record.id);
+      record.sync = { status: 'ok', at: new Date().toISOString() };
+    } else {
+      record.sync = { status: 'ok', at: new Date().toISOString() };
+      save();
+      location.href = cal.shortcutUrl(ev, cfg.shortcutName);
+    }
+  } catch (e) {
+    record.sync = { ...record.sync, status: 'error', error: e.message };
+    toast(`加入失敗：${e.message}`, 'error');
+  }
+  save();
+  onChange();
+  return record.sync;
+}
+
+/** 新增一筆行程（行程頁與萬用輸入共用） */
+function addEvent(parsed, text, onChange) {
+  const record = {
+    id: uid(),
+    text,
+    title: parsed.title,
+    location: parsed.location,
+    notes: parsed.notes,
+    tags: parsed.tags,
+    allDay: parsed.allDay,
+    start: parsed.start.toISOString(),
+    end: parsed.end.toISOString(),
+    createdAt: new Date().toISOString(),
+    sync: { status: 'pending' },
+  };
+  db().events.push(record);
+  save();
+  reward('event.add', `「${parsed.title}」排進行事曆了`);
+  deliverEvent(parsed, record, onChange);
+  return record;
+}
+
 function viewEvents() {
   const cfg = settings().calendar;
+  let editingId = null;
   $app.innerHTML = `
     ${nav({ back: '#/', backLabel: 'Beamup', title: '行程' })}
     <main class="page" style="${featureVars('event')}">
@@ -1080,6 +1380,7 @@ function viewEvents() {
       <div id="preview"></div>
       <div class="ev-actions">
         <button class="btn btn-primary" id="add" disabled>${icon('calendarPlus')}加入行事曆</button>
+        <button class="btn btn-tinted" id="cancelEdit" hidden style="margin-top:10px">取消修改</button>
         <p class="caption">${esc(MODE_TEXT[cfg.mode](cfg))} · <a href="#/settings">變更</a></p>
       </div>
 
@@ -1148,54 +1449,44 @@ function viewEvents() {
   $('clear').addEventListener('click', () => insert(''));
   input.addEventListener('input', update);
 
-  const send = async (ev, record) => {
-    try {
-      if (cfg.mode === 'outlook') {
-        record.sync = { status: 'pending' };
-        renderHistory();
-        record.sync = { status: 'ok', at: new Date().toISOString(), remoteId: await ms.createOutlookEvent(ev, settings()) };
-        toast('已加入 Outlook 行事曆');
-      } else if (cfg.mode === 'ics') {
-        cal.openIcs(ev, record.id);
-        record.sync = { status: 'ok', at: new Date().toISOString() };
-      } else {
-        record.sync = { status: 'ok', at: new Date().toISOString() };
-        save();
-        location.href = cal.shortcutUrl(ev, cfg.shortcutName);
-      }
-    } catch (e) {
-      record.sync = { status: 'error', error: e.message };
-      toast(`加入失敗：${e.message}`, 'error');
-    }
-    save();
-    renderHistory();
+  const setEditing = (record) => {
+    editingId = record ? record.id : null;
+    $('add').innerHTML = record ? `${icon('check')}更新行程` : `${icon('calendarPlus')}加入行事曆`;
+    $('cancelEdit').hidden = !record;
+    if (record) insert(record.text || `${formatRange(toEvent(record)).replace(/（.）/, '')} [${record.title}]`);
   };
+  $('cancelEdit').addEventListener('click', () => {
+    setEditing(null);
+    insert('');
+  });
 
   $('add').addEventListener('click', () => {
     if (!parsed || !parsed.ok) return;
-    const record = {
-      id: uid(),
-      text: input.value.trim(),
-      title: parsed.title,
-      location: parsed.location,
-      notes: parsed.notes,
-      tags: parsed.tags,
-      allDay: parsed.allDay,
-      start: parsed.start.toISOString(),
-      end: parsed.end.toISOString(),
-      createdAt: new Date().toISOString(),
-      sync: { status: 'pending' },
-    };
-    db().events.push(record);
-    save();
     const ev = parsed;
-    queueCheer(`「${ev.title}」排進行事曆了`);
+    const text = input.value.trim();
+    const record = editingId && db().events.find((r) => r.id === editingId);
+    if (record) {
+      ev.replace = { title: record.title, start: record.start };
+      Object.assign(record, {
+        text,
+        title: ev.title,
+        location: ev.location,
+        notes: ev.notes,
+        tags: ev.tags,
+        allDay: ev.allDay,
+        start: ev.start.toISOString(),
+        end: ev.end.toISOString(),
+      });
+      save();
+      deliverEvent(ev, record, renderHistory).then((s) => {
+        if (s.status === 'ok' && cfg.mode !== 'outlook') toast('已送出新的時間；行事曆裡舊的那筆請記得刪除');
+      });
+      setEditing(null);
+    } else addEvent(ev, text, renderHistory);
     input.value = '';
     update();
-    send(ev, record);
   });
 
-  const toEvent = (r) => ({ ...r, start: new Date(r.start), end: new Date(r.end), tags: r.tags || [] });
   const renderHistory = () => {
     const items = [...db().events].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 15);
     $('history').innerHTML = items.length
@@ -1218,8 +1509,8 @@ function viewEvents() {
     if (!record) return;
     sheet(
       [
-        { label: '再加入一次行事曆', run: () => send(toEvent(record), record) },
-        { label: '複製到輸入框修改', run: () => insert(record.text) },
+        { label: '修改', run: () => setEditing(record) },
+        { label: '再加入一次行事曆', run: () => deliverEvent(toEvent(record), record, renderHistory) },
         {
           label: '刪除紀錄',
           danger: true,
@@ -1237,6 +1528,211 @@ function viewEvents() {
   refreshCurrent = renderHistory;
   renderHistory();
   input.focus();
+}
+
+// ---------- 外星人小屋 ----------
+
+function viewPet() {
+  const pet = db().pet;
+  const alien = character(settings().appearance.alien);
+  const energy = energyNow(pet);
+  const mood = petMood(energy);
+  const lv = levelInfo(pet.xp);
+  let pokes = 0;
+  try {
+    pokes = Number(localStorage.getItem('beamup.pokes')) || 0;
+  } catch {}
+
+  // 最近 5 週的出席點點（每列一週，週一開頭）
+  const today = startOfToday();
+  const mondayOffset = (today.getDay() + 6) % 7;
+  const firstDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() - mondayOffset - 28);
+  const used = new Set(pet.days);
+  const dots = Array.from({ length: 35 }, (_, i) => {
+    const d = new Date(firstDay.getFullYear(), firstDay.getMonth(), firstDay.getDate() + i);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const future = d > today;
+    const isToday = d.getTime() === today.getTime();
+    return `<i class="${used.has(key) ? 'on' : ''} ${future ? 'future' : ''} ${isToday ? 'today' : ''}" title="${d.getMonth() + 1}/${d.getDate()}"></i>`;
+  }).join('');
+
+  $app.innerHTML = `
+    ${nav({ back: '#/', backLabel: 'Beamup', title: `${alien.name} 的小屋` })}
+    <main class="page" style="${featureVars('todo')}">
+      <h1 class="large-title"><span class="brand-inline">${esc(alien.name)}</span> 的小屋</h1>
+
+      <section class="pet-hero">
+        <canvas id="petPreview" class="pet-sprite"></canvas>
+        <div class="pet-info">
+          <div class="pet-lv"><b>Lv.${lv.level}</b><small>再 ${lv.toNext} 點經驗升級</small></div>
+          <div class="bar xp" role="progressbar" aria-valuenow="${lv.into}" aria-valuemax="${lv.need}"><i style="width:${Math.round((lv.into / lv.need) * 100)}%"></i></div>
+          <div class="pet-lv"><span>能量 ${energy}</span><small>${MOOD_TEXT[mood]}</small></div>
+          <div class="bar energy ${mood}" role="progressbar" aria-valuenow="${energy}" aria-valuemax="100"><i style="width:${energy}%"></i></div>
+        </div>
+      </section>
+
+      <h2 class="group-header">連續使用</h2>
+      <section class="streak-card">
+        <div class="streak-top">
+          <div class="streak-num">${icon('flame')}<b>${pet.streak}</b><span>天</span></div>
+          <small>最長紀錄 ${pet.best} 天<br>每天打開一次就算</small>
+        </div>
+        <div class="dots-head">${'一二三四五六日'.split('').map((d) => `<span>${d}</span>`).join('')}</div>
+        <div class="dots">${dots}</div>
+      </section>
+
+      <h2 class="group-header">成績</h2>
+      <div class="stat-grid">
+        <div><b>${pet.stats.todosDone}</b><small>完成待辦</small></div>
+        <div><b>${pet.stats.notes}</b><small>筆記</small></div>
+        <div><b>${pet.stats.events}</b><small>行程</small></div>
+        <div><b>${pokes}</b><small>被戳</small></div>
+      </div>
+
+      <h2 class="group-header">配件</h2>
+      <div class="acc-grid" id="accGrid">
+        ${ACCESSORIES.map((a) => {
+          const have = pet.unlocked.includes(a.id);
+          const cur = Math.min(a.goal, a.stat(pet));
+          return `<button class="acc-card ${have ? '' : 'locked'} ${pet.equipped === a.id ? 'on' : ''}" data-acc="${a.id}" ${have ? '' : 'aria-disabled="true"'}>
+            <canvas data-acc-preview="${a.id}"></canvas>
+            <b>${esc(a.name)}</b>
+            ${
+              have
+                ? `<small>${pet.equipped === a.id ? '穿著中' : '點一下穿上'}</small>`
+                : `<small>${icon('lock')}${esc(a.hint)}</small><span class="bar mini"><i style="width:${Math.round((cur / a.goal) * 100)}%"></i></span>`
+            }
+          </button>`;
+        }).join('')}
+      </div>
+
+      <h2 class="group-header">怎麼餵 ${esc(alien.name)}</h2>
+      <ul class="group">
+        ${Object.values(GAINS)
+          .map((g) => `<li class="cell"><span class="cell-label">${g.label}</span><span class="cell-value">能量 +${g.energy} · 經驗 +${g.xp}</span></li>`)
+          .join('')}
+      </ul>
+      <p class="group-footer">能量每小時少 1 點。太久沒來，${esc(alien.name)} 會餓到垂頭喪氣喔。</p>
+    </main>`;
+
+  drawAlienPreview(document.getElementById('petPreview'), settings().appearance.alien, pet.equipped);
+  document.querySelectorAll('canvas[data-acc-preview]').forEach((c) => drawAccessory(c, c.dataset.accPreview));
+  document.getElementById('accGrid').addEventListener('click', (e) => {
+    const card = e.target.closest('[data-acc]');
+    if (!card) return;
+    const id = card.dataset.acc;
+    const a = ACCESSORIES.find((x) => x.id === id);
+    if (!pet.unlocked.includes(id)) return toast(`還沒解鎖：${a.hint}`, 'error');
+    pet.equipped = pet.equipped === id ? null : id;
+    save();
+    toast(pet.equipped ? `穿上${a.name}了` : `脫下${a.name}了`);
+    const y = window.scrollY;
+    viewPet();
+    window.scrollTo(0, y);
+  });
+}
+
+// ---------- 說明：Siri 快速記錄、提醒 ----------
+
+function steps(list) {
+  return `<ol class="steps">${list.map((x) => `<li>${x}</li>`).join('')}</ol>`;
+}
+
+function copyRow(text) {
+  return `<div class="copy-row"><span>${esc(text)}</span><button class="capsule" data-copy="${esc(text)}">${icon('copy')}複製</button></div>`;
+}
+
+function bindCopy() {
+  if ($app.dataset.copyBound) return; // #app 不會被換掉，只綁一次
+  $app.dataset.copyBound = '1';
+  $app.addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-copy]');
+    if (!b) return;
+    try {
+      await navigator.clipboard.writeText(b.dataset.copy);
+      toast('已複製');
+    } catch {
+      toast('無法複製，請長按文字選取', 'error');
+    }
+  });
+}
+
+function viewHelpSiri() {
+  const name = character(settings().appearance.alien).name;
+  $app.innerHTML = `
+    ${nav({ back: '#/settings', backLabel: '設定', title: 'Siri 快速記錄' })}
+    <main class="page">
+      <h1 class="large-title">Siri 快速記錄</h1>
+      <p class="lead">說一句「嘿 Siri，丟給 ${esc(name)}」就能記下來。也可以設定成輕點手機背面兩下，或按動作按鈕。</p>
+      <div class="note-box">${icon('alert')}<span>iPhone 不允許捷徑直接打開主畫面上的網頁 App，所以會分兩步：捷徑先把你說的話拷貝起來，你打開 Beamup 後在首頁點「貼上」→「送出」。</span></div>
+
+      <h2 class="group-header">建立捷徑（只要做一次）</h2>
+      <div class="help-card">
+        ${steps([
+          '打開「捷徑」App，按右上角 <b>＋</b>，把捷徑命名為 <b>丟給 ' + esc(name) + '</b>。',
+          '加入動作 <b>聽寫文字</b>，語言選「中文（台灣）」。',
+          '加入動作 <b>拷貝到剪貼板</b>。',
+          '加入動作 <b>顯示通知</b>，內容貼上：' + copyRow('已交給 ' + name + '，打開 Beamup 按「貼上」'),
+          '按完成。現在說「嘿 Siri，丟給 ' + esc(name) + '」試試看。',
+        ])}
+      </div>
+
+      <h2 class="group-header">更快的啟動方式</h2>
+      <ul class="group icons">
+        <li class="cell"><span class="cell-icon" style="--c: var(--gray)">${icon('person')}</span><span class="cell-label">輕點背面<small>設定 › 輔助使用 › 觸控 › 背面輕點 › 點兩下 › 選「丟給 ${esc(name)}」</small></span></li>
+        <li class="cell"><span class="cell-icon" style="--c: var(--accent)">${icon('bolt')}</span><span class="cell-label">動作按鈕（iPhone 15 Pro 以上）<small>設定 › 動作按鈕 › 捷徑 › 選「丟給 ${esc(name)}」</small></span></li>
+        <li class="cell"><span class="cell-icon" style="--c: var(--event); --on-c: var(--on-event)">${icon('house')}</span><span class="cell-label">放在 Dock<small>把 Beamup 拖到螢幕最下面的 Dock，貼上時一打開就到</small></span></li>
+      </ul>
+
+      <h2 class="group-header">說話的小技巧</h2>
+      <ul class="group">
+        <li class="cell"><span class="cell-label">「明天下午三點跟廠商開會」<small>有日期和時間 → 自動變成行程</small></span></li>
+        <li class="cell"><span class="cell-label">「週五交期末報告」<small>只有日期 → 待辦，截止日是週五</small></span></li>
+        <li class="cell"><span class="cell-label">「筆記 今天會議的三個重點…」<small>開頭說「筆記」「待辦」「行程」可以指定分類</small></span></li>
+      </ul>
+    </main>`;
+  bindCopy();
+}
+
+function viewHelpReminders() {
+  const name = character(settings().appearance.alien).name;
+  const morning = `${name} 肚子餓了，打開 Beamup 看看今天要做什麼`;
+  const evening = `今天完成了幾件事？回 Beamup 跟 ${name} 報告一下`;
+  $app.innerHTML = `
+    ${nav({ back: '#/settings', backLabel: '設定', title: '提醒' })}
+    <main class="page">
+      <h1 class="large-title">提醒</h1>
+      <p class="lead">網頁 App 沒辦法自己推播通知，所以借用 iPhone 內建的「捷徑」來提醒你。不需要伺服器，也不用付費。</p>
+
+      <h2 class="group-header">每天提醒我打開 Beamup</h2>
+      <div class="help-card">
+        ${steps([
+          '打開「捷徑」App，點下方 <b>自動化</b>，再按右上角 <b>＋</b>。',
+          '選 <b>特定時間</b>，設成早上 <b>9:00</b>、<b>每天</b>，下面選 <b>立即執行</b>。',
+          '加入動作 <b>顯示通知</b>，內容貼上：' + copyRow(morning),
+          '再建一個晚上 <b>21:00</b> 的自動化，通知內容：' + copyRow(evening),
+        ])}
+        <p class="help-note">點通知會先打開「捷徑」，再點 Beamup 圖示就好（iOS 的限制）。把 Beamup 放在 Dock 最方便。</p>
+      </div>
+
+      <h2 class="group-header">待辦到期時提醒我</h2>
+      <div class="help-card">
+        ${steps([
+          `在「捷徑」App 新增捷徑，命名為 <b>${esc(settings().reminders.shortcutName)}</b>。`,
+          '加入 <b>從輸入取得辭典</b>，再加 <b>取得辭典值</b>，鍵填 <code>items</code>。',
+          '加入 <b>重複每一個項目</b>，在裡面：用 <b>取得辭典值</b> 取出 <code>title</code>、<code>due</code>、<code>notes</code>。',
+          '同樣在重複裡面加入 <b>加入新提醒事項</b>：標題 = title、打開「提醒我」選日期 = due、備忘錄 = notes。',
+          '回到 Beamup <a href="#/settings">設定</a>，打開「有截止日的待辦加到提醒事項」。',
+        ])}
+        <p class="help-note">之後新增或修改有截止日的待辦時，Beamup 會呼叫這個捷徑，到期當天 ${esc(settings().reminders.time)} 由 iPhone 提醒你。</p>
+      </div>
+
+      <h2 class="group-header">行程開始前提醒我</h2>
+      <div class="help-card">
+        ${steps(['打開「加入行程」捷徑，在 <b>加入新行程</b> 動作裡，把「提醒」設成 <b>15 分鐘前</b>（或你習慣的時間）。'])}
+      </div>
+    </main>`;
+  bindCopy();
 }
 
 // ---------- 外觀 ----------
@@ -1417,6 +1913,28 @@ function viewSettings() {
       </ul>
       <p class="group-footer">只寫開始時間時，行程會用預設長度。</p>
 
+      <h2 class="group-header">提醒與快速記錄</h2>
+      <ul class="group icons">
+        <li><a class="cell tap" href="#/help/siri">
+          <span class="cell-icon" style="--c: #5E5CE6">${icon('mic')}</span>
+          <span class="cell-label">Siri 快速記錄<small>說「嘿 Siri，丟給 ${esc(character(s.appearance.alien).name)}」</small></span>${icon('chevronRight', 'chev')}
+        </a></li>
+        <li><a class="cell tap" href="#/help/reminders">
+          <span class="cell-icon" style="--c: var(--danger)">${icon('bell')}</span>
+          <span class="cell-label">每天提醒我<small>用 iPhone 捷徑定時通知</small></span>${icon('chevronRight', 'chev')}
+        </a></li>
+        <li class="cell">
+          <span class="cell-icon" style="${featureVars('todo')}">${icon('checklist')}</span>
+          <label class="cell-label" for="remindOn">有截止日的待辦加到提醒事項<small>需要捷徑「${esc(s.reminders.shortcutName)}」</small></label>
+          <input type="checkbox" class="switch" id="remindOn" ${s.reminders.enabled ? 'checked' : ''}>
+        </li>
+        <li class="cell" ${s.reminders.enabled ? '' : 'hidden'} id="remindTimeRow">
+          <span class="cell-icon" style="--c: var(--gray)">${icon('clock')}</span>
+          <span class="cell-label">到期當天幾點提醒</span>
+          <input type="time" id="remindTime" class="right" style="flex:0 0 auto" value="${esc(s.reminders.time)}">
+        </li>
+      </ul>
+
       <h2 class="group-header">資料</h2>
       <ul class="group icons">
         <li class="cell">
@@ -1451,6 +1969,16 @@ function viewSettings() {
   bindField('clientId', s.microsoft, 'clientId');
   bindField('tenant', s.microsoft, 'tenant');
   bindField('shortcutName', s.calendar, 'shortcutName');
+  $('remindOn').addEventListener('change', (e) => {
+    s.reminders.enabled = e.target.checked;
+    save();
+    $('remindTimeRow').hidden = !e.target.checked;
+    if (e.target.checked) toast('記得先建立「' + s.reminders.shortcutName + '」捷徑（見「每天提醒我」）');
+  });
+  $('remindTime').addEventListener('change', (e) => {
+    s.reminders.time = e.target.value || '09:00';
+    save();
+  });
   bindField('duration', s.calendar, 'defaultDuration', () => ($('durText').textContent = `${s.calendar.defaultDuration} 分鐘`));
 
   $('ping').addEventListener('click', async () => {
@@ -1564,8 +2092,13 @@ function viewSettings() {
 
 const routes = [
   [/^#\/?$/, viewHome],
-  [/^#\/todo$/, viewTodo],
+  [/^#\/todo$/, () => viewTodo()],
   [/^#\/todo\/list$/, viewTodoList],
+  [/^#\/todo\/edit\/(.+)$/, (id) => viewTodo(decodeURIComponent(id))],
+  [/^#\/pet$/, viewPet],
+  [/^#\/help\/siri$/, viewHelpSiri],
+  [/^#\/help\/reminders$/, viewHelpReminders],
+  [/^#\/add\/(.*)$/, (text) => ((ui.capture = decodeURIComponent(text)), (location.hash = '#/'))],
   [/^#\/notes(?:\/new)?$/, () => viewNoteEditor(null)],
   [/^#\/notes\/list$/, viewNoteList],
   [/^#\/notes\/edit\/(.+)$/, (id) => viewNoteEditor(decodeURIComponent(id))],
@@ -1591,8 +2124,24 @@ function render() {
   location.hash = '#/';
 }
 
+/** 每天第一次打開：算連續天數、餵一顆星星 */
+function dailyVisit() {
+  const v = petVisit(db().pet);
+  save();
+  if (!v.firstToday) return;
+  const line = v.away >= 2 ? `${v.away} 天沒見了…好想你` : v.streak > 1 ? `連續 ${v.streak} 天見面了！` : '今天也來看我了！';
+  if (v.unlocked.length) toast(`解鎖新配件：${v.unlocked.map((a) => a.name).join('、')}（到小屋穿上）`);
+  if (liveMascot && document.getElementById('stage')) liveMascot.feed(line);
+  else queueCheer(line);
+  const chip = document.getElementById('petChip');
+  if (chip) chip.innerHTML = petChip();
+}
+
 async function start() {
   applyTheme(settings().appearance);
+  dailyVisit();
+  // App 一直開著跨過午夜時，回到畫面也要算新的一天
+  document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && dailyVisit());
   matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
     if (location.hash === '#/appearance') viewAppearance();
   });

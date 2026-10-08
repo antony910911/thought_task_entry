@@ -4,16 +4,24 @@ export function isConfigured(settings) {
   return Boolean(settings.todo.webhookUrl);
 }
 
-export function payloadFor(todo) {
+/**
+ * @param {'todo.created'|'todo.updated'|'todo.deleted'} type
+ *   created：第一次送出；updated：改內容或勾選完成；deleted：在 App 裡刪掉
+ */
+export function payloadFor(todo, type = 'todo.created') {
   return {
-    type: 'todo.created',
+    type,
     id: todo.id,
+    remoteId: (todo.sync && todo.sync.remoteId) || null,
     title: todo.title,
     note: todo.note || '',
     due: todo.due || null,
     priority: todo.priority || 'normal',
     tags: todo.tags || [],
+    done: Boolean(todo.done),
+    doneAt: todo.doneAt || null,
     createdAt: todo.createdAt,
+    updatedAt: todo.updatedAt || todo.createdAt,
     source: 'beamup',
   };
 }
@@ -37,8 +45,8 @@ export async function ping(settings) {
   await post(settings, { type: 'ping', source: 'beamup', sentAt: new Date().toISOString() });
 }
 
-export async function sendTodo(todo, settings) {
-  const res = await post(settings, payloadFor(todo));
+export async function sendTodo(todo, settings, type = 'todo.created') {
+  const res = await post(settings, payloadFor(todo, type));
   // 若伺服器回傳 {"id": "..."}，記下遠端 id
   try {
     const body = await res.json();

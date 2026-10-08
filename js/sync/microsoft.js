@@ -245,6 +245,19 @@ export async function createOutlookEvent(ev, settings) {
   return created.id;
 }
 
+export async function updateOutlookEvent(id, ev, settings) {
+  const body = {
+    subject: ev.title,
+    isAllDay: ev.allDay,
+    start: { dateTime: ev.allDay ? localMidnight(ev.start) : ev.start.toISOString(), timeZone: ev.allDay ? tz() : 'UTC' },
+    end: { dateTime: ev.allDay ? localMidnight(ev.end) : ev.end.toISOString(), timeZone: ev.allDay ? tz() : 'UTC' },
+    location: { displayName: ev.location || '' },
+    body: { contentType: 'text', content: [ev.notes, ev.tags.map((t) => '#' + t).join(' ')].filter(Boolean).join('\n') },
+  };
+  await graph(settings, `/me/events/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) });
+  return id;
+}
+
 function tz() {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 }

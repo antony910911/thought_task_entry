@@ -7,12 +7,26 @@ const DEFAULTS = {
   notes: [],
   events: [],
   tagLibrary: [],
+  // 外星人養成（規則見 pet.js）
+  pet: {
+    xp: 0,
+    energy: 70,
+    energyAt: '',
+    streak: 0,
+    best: 0,
+    lastDay: null,
+    days: [],
+    stats: { todosDone: 0, todosAdded: 0, notes: 0, events: 0 },
+    unlocked: [],
+    equipped: null,
+  },
   settings: {
     todo: { webhookUrl: '', token: '' },
     microsoft: { clientId: '', tenant: 'organizations' },
     onenote: { sectionId: '', sectionName: '' },
     calendar: { mode: 'shortcut', shortcutName: '加入行程', defaultDuration: 60 },
     appearance: { theme: 'classic', mode: 'auto', alien: 'blip' },
+    reminders: { enabled: false, shortcutName: '加入提醒', time: '09:00' },
   },
 };
 

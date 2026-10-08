@@ -1,8 +1,10 @@
 // 外星人角色圖鑑。每隻都是 16×16 像素圖。
 // 圖上的字母代表顏色：B 身體、D 陰影、L 亮面、A 天線燈；E 眼睛、W 眼白／反光、M 嘴巴、P 腮紅（共用）。
+// anchor：戴配件的位置（top = 頭頂那一列、eye = 眼睛那一列）。
 // eyes 只寫左眼，右眼自動左右鏡射（mirror: false 的獨眼角色除外）；其餘部位都是絕對座標 [列, 欄]。
 
 const BLIP = {
+  anchor: { top: 3, eye: 6 },
   rideRows: 11,
   name: 'Blip',
   desc: '綠色小外星人，顏色跟著配色換',
@@ -54,6 +56,7 @@ const BLIP = {
 };
 
 const ZORP = {
+  anchor: { top: 2, eye: 5 },
   rideRows: 12,
   name: 'Zorp',
   desc: '獨眼紫怪，好奇心超重',
@@ -107,6 +110,7 @@ const ZORP = {
 };
 
 const POM = {
+  anchor: { top: 4, eye: 8 },
   rideRows: 12,
   name: 'Pom',
   desc: '粉紅麻糬，最愛被摸頭',
@@ -159,6 +163,7 @@ const POM = {
 };
 
 const GLIM = {
+  anchor: { top: 2, eye: 7 },
   rideRows: 11,
   name: 'Glim',
   desc: '會飄的水母星人',
@@ -212,6 +217,7 @@ const GLIM = {
 };
 
 const BOLT = {
+  anchor: { top: 2, eye: 6 },
   rideRows: 10,
   name: 'Bolt',
   desc: '戴頭盔的機器人星人',
