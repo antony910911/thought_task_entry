@@ -1,12 +1,15 @@
 import { db, save, uid, replaceAll } from './store.js';
 import { parseEvent, formatRange, formatDate, formatTime } from './parser.js';
+import { icon } from './icons.js';
+import { THEMES, MODES, themeById, applyTheme, effectiveMode } from './themes.js';
 import * as todoSync from './sync/todo.js';
 import * as ms from './sync/microsoft.js';
 import * as cal from './sync/calendar.js';
 
 const $app = document.getElementById('app');
 const DRAFT_KEY = 'tte.noteDraft';
-let refreshCurrent = null; // 同步完成後，只刷新目前頁面的局部區塊（避免清掉正在輸入的內容）
+const WEEK = '日一二三四五六';
+let refreshCurrent = null; // 同步完成後只刷新目前頁面的局部區塊，避免清掉正在輸入的內容
 const ui = { todoTab: 'open', noteTag: '', noteQuery: '' };
 
 // ---------- 共用小工具 ----------
@@ -14,78 +17,127 @@ const ui = { todoTab: 'open', noteTag: '', noteQuery: '' };
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
+const settings = () => db().settings;
+const featureVars = (key) => `--c: var(--${key}); --on-c: var(--on-${key})`;
+
 function splitTags(text) {
   return [...new Set(String(text).split(/[\s,，、#]+/).map((t) => t.trim()).filter(Boolean))];
 }
 
-function header(title, { back, right = '' } = {}) {
-  return `<header class="bar">
-    ${back ? `<a class="hbtn back" href="${back}" aria-label="返回">‹</a>` : '<span class="hbtn"></span>'}
-    <h1>${esc(title)}</h1>
-    <div class="hright">${right}</div>
+function startOfToday() {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+
+function dayDiff(date) {
+  const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  return Math.round((d - startOfToday()) / 86_400_000);
+}
+
+function shortTime(iso) {
+  const d = new Date(iso);
+  const diff = dayDiff(d);
+  if (diff === 0) return formatTime(d);
+  if (diff === -1) return '昨天';
+  if (diff > -7) return `週${WEEK[d.getDay()]}`;
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+function longDate(d) {
+  const h = d.getHours();
+  const period = h < 12 ? '上午' : '下午';
+  return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${period}${h % 12 || 12}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function dueInfo(due) {
+  if (!due) return null;
+  const diff = dayDiff(new Date(`${due}T00:00`));
+  const d = new Date(`${due}T00:00`);
+  if (diff < 0) return { text: `逾期 ${-diff} 天`, cls: 'overdue', diff };
+  if (diff === 0) return { text: '今天', cls: 'today', diff };
+  if (diff === 1) return { text: '明天', cls: '', diff };
+  if (diff < 7) return { text: `週${WEEK[d.getDay()]}`, cls: '', diff };
+  return { text: `${d.getMonth() + 1}月${d.getDate()}日`, cls: '', diff };
+}
+
+function nav({ back, backLabel = '返回', title = '', actions = '', staticTitle = false } = {}) {
+  return `<header class="nav${staticTitle ? ' static' : ''}">
+    ${back ? `<a class="nav-back" href="${back}">${icon('chevronLeft')}<span>${esc(backLabel)}</span></a>` : '<span></span>'}
+    <div class="nav-title">${esc(title)}</div>
+    <div class="nav-actions">${actions}</div>
   </header>`;
 }
 
-const SYNC_LABEL = { ok: '已同步', pending: '同步中', error: '同步失敗', off: '僅本機' };
-
-function badge(sync, okText) {
-  const status = (sync && sync.status) || 'off';
-  const title = sync && sync.error ? ` title="${esc(sync.error)}"` : '';
-  return `<span class="badge ${status}"${title}>${status === 'ok' && okText ? okText : SYNC_LABEL[status]}</span>`;
+function updateNav() {
+  const bar = document.querySelector('.nav');
+  if (!bar) return;
+  const title = document.querySelector('.large-title');
+  const limit = title ? title.offsetTop + title.offsetHeight - bar.offsetHeight : 0;
+  bar.classList.toggle('scrolled', window.scrollY > Math.max(4, limit));
 }
 
-function timeAgo(iso) {
-  const d = new Date(iso);
-  const today = new Date();
-  if (d.toDateString() === today.toDateString()) return `今天 ${formatTime(d)}`;
-  return `${formatDate(d)} ${formatTime(d)}`;
+function syncIcon(sync) {
+  const status = sync && sync.status;
+  if (status === 'ok') return `<span class="sync ok" title="已同步">${icon('checkCircle')}</span>`;
+  if (status === 'pending') return `<span class="sync pending" title="同步中">${icon('spinner', 'spin')}</span>`;
+  if (status === 'error') return `<span class="sync error" title="${esc(sync.error || '同步失敗')}">${icon('alert')}</span>`;
+  return '';
 }
 
 let toastTimer;
-function toast(message, type = 'info') {
+function toast(message, type = 'ok') {
   let el = document.getElementById('toast');
   if (!el) {
     el = document.createElement('div');
     el.id = 'toast';
+    el.setAttribute('role', 'status');
     document.body.appendChild(el);
   }
-  el.className = `show ${type}`;
-  el.textContent = message;
+  el.className = type === 'error' ? 'error' : '';
+  el.innerHTML = `<span class="ti">${icon(type === 'error' ? 'xmark' : 'check')}</span><span>${esc(message)}</span>`;
+  requestAnimationFrame(() => el.classList.add('show'));
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (el.className = ''), type === 'error' ? 5000 : 2500);
+  toastTimer = setTimeout(() => el.classList.remove('show'), type === 'error' ? 4500 : 2200);
 }
 
-function sheet(actions) {
+function sheet(actions, title = '') {
   const wrap = document.createElement('div');
   wrap.className = 'sheet-wrap';
   wrap.innerHTML = `<div class="sheet">
-      ${actions.map((a, i) => `<button data-i="${i}" class="${a.danger ? 'danger' : ''}">${esc(a.label)}</button>`).join('')}
-      <button data-i="-1" class="cancel">取消</button>
+      <div class="sheet-group">
+        ${title ? `<div class="sheet-title">${esc(title)}</div>` : ''}
+        ${actions.map((a, i) => `<button data-i="${i}" class="${a.danger ? 'danger' : ''} ${title ? 'after-title' : ''}">${esc(a.label)}</button>`).join('')}
+      </div>
+      <div class="sheet-group cancel"><button data-i="-1">取消</button></div>
     </div>`;
+  const close = (action) => {
+    wrap.classList.remove('open');
+    setTimeout(() => wrap.remove(), 300);
+    if (action) action.run();
+  };
   wrap.addEventListener('click', (e) => {
     const btn = e.target.closest('button');
-    if (!btn && e.target !== wrap) return;
-    wrap.remove();
-    const action = btn ? actions[Number(btn.dataset.i)] : null;
-    if (action) action.run();
+    if (btn) close(actions[Number(btn.dataset.i)]);
+    else if (e.target === wrap) close(null);
   });
   document.body.appendChild(wrap);
+  requestAnimationFrame(() => wrap.classList.add('open'));
 }
 
-function hint(html) {
-  return `<p class="hint">${html}</p>`;
+function autosize(el, min = 0) {
+  el.style.height = 'auto';
+  el.style.height = Math.max(min, el.scrollHeight) + 'px';
 }
 
 // ---------- 同步 ----------
 
-const settings = () => db().settings;
 const onenoteReady = () => ms.isSignedIn() && Boolean(settings().onenote.sectionId);
 
 async function syncTodo(todo) {
   if (!todoSync.isConfigured(settings())) {
     todo.sync = { status: 'off' };
     save();
-    return;
+    return todo.sync;
   }
   todo.sync = { status: 'pending' };
   save();
@@ -130,66 +182,24 @@ function pendingCount() {
   return db().todos.filter(bad).length + db().notes.filter(bad).length;
 }
 
-// ---------- 首頁 ----------
+// ---------- 待辦：共用列 ----------
 
-function viewHome() {
-  const now = new Date();
-  const openTodos = db().todos.filter((t) => !t.done).length;
-  const upcoming = db()
-    .events.filter((e) => new Date(e.end) >= now)
-    .sort((a, b) => new Date(a.start) - new Date(b.start));
-  const pending = pendingCount();
-  $app.innerHTML = `
-    ${header('隨手記', { right: '<a class="hbtn" href="#/settings" aria-label="設定">⚙︎</a>' })}
-    <main class="page home">
-      <p class="today">${formatDate(now)}（${'日一二三四五六'[now.getDay()]}）</p>
-      <a class="tile todo" href="#/todo">
-        <span class="icon">✓</span>
-        <span class="label"><b>待辦事項</b><small>${openTodos ? `${openTodos} 件未完成` : '寫下要做的事'}</small></span>
-        <span class="chev">›</span>
-      </a>
-      <a class="tile note" href="#/notes">
-        <span class="icon">✎</span>
-        <span class="label"><b>筆記</b><small>${db().notes.length ? `共 ${db().notes.length} 篇` : '寫筆記、加標籤、送到 OneNote'}</small></span>
-        <span class="chev">›</span>
-      </a>
-      <a class="tile event" href="#/events">
-        <span class="icon">${now.getDate()}</span>
-        <span class="label"><b>行程</b><small>${upcoming.length ? `下一個：${esc(upcoming[0].title)}` : '一句話加入行事曆'}</small></span>
-        <span class="chev">›</span>
-      </a>
-      ${
-        pending
-          ? `<button class="banner" id="retry">${pending} 筆尚未同步，點此重試</button>`
-          : ''
-      }
-    </main>`;
-  document.getElementById('retry')?.addEventListener('click', async () => {
-    await retryPending();
-    toast(pendingCount() ? '仍有項目同步失敗，請檢查設定' : '全部同步完成');
-    viewHome();
-  });
-}
-
-// ---------- 待辦事項 ----------
-
-function todoMeta(t) {
-  const parts = [];
-  if (t.due) parts.push(`截止 ${t.due.replace(/-/g, '/')}`);
-  if (t.priority === 'high') parts.push('<em class="high">高優先</em>');
-  if (t.priority === 'low') parts.push('低優先');
-  if (t.tags && t.tags.length) parts.push(t.tags.map((x) => '#' + esc(x)).join(' '));
-  return parts.join(' · ');
-}
-
-function todoItem(t) {
-  return `<li class="item ${t.done ? 'done' : ''}" data-id="${t.id}">
-    <button class="check" data-act="toggle" aria-label="完成">${t.done ? '✓' : ''}</button>
-    <div class="body" data-act="more">
-      <div class="title">${esc(t.title)}</div>
-      <div class="meta">${todoMeta(t)}${t.note ? `<div class="note">${esc(t.note)}</div>` : ''}</div>
+function todoRow(t) {
+  const due = dueInfo(t.due);
+  const meta = [];
+  if (due) meta.push(`<span class="${due.cls}">${icon('calendar')}${due.text}</span>`);
+  if (t.priority === 'low') meta.push('<span>低優先</span>');
+  if (t.tags && t.tags.length) meta.push(`<span class="tagtxt" style="--c: var(--todo)">${t.tags.map((x) => '#' + esc(x)).join(' ')}</span>`);
+  return `<li class="${t.done ? 'done' : ''}" data-id="${t.id}">
+    <div class="cell task">
+      <button class="check" data-act="toggle" aria-label="${t.done ? '標為未完成' : '完成'}">${icon('check')}</button>
+      <div class="task-body" data-act="more">
+        <div class="task-title">${t.priority === 'high' ? '<span class="prio">!!</span>' : ''}${esc(t.title)}</div>
+        ${meta.length ? `<div class="meta">${meta.join('')}</div>` : ''}
+        ${t.note ? `<div class="task-note">${esc(t.note)}</div>` : ''}
+      </div>
+      <span data-act="more">${syncIcon(t.sync)}</span>
     </div>
-    <span data-act="more">${badge(t.sync)}</span>
   </li>`;
 }
 
@@ -204,15 +214,18 @@ function bindTodoList(root, rerender) {
       todo.done = !todo.done;
       todo.doneAt = todo.done ? new Date().toISOString() : null;
       save();
-      rerender();
+      li.classList.toggle('done', todo.done); // 先播勾選動畫，再重排
+      setTimeout(rerender, 450);
       return;
     }
     const actions = [];
     if (todoSync.isConfigured(settings()) && (!todo.sync || todo.sync.status !== 'ok'))
-      actions.push({ label: '重新同步到專案管理工具', run: () => syncTodo(todo).then((s) => s && toast(SYNC_LABEL[s.status], s.status === 'error' ? 'error' : 'info')) });
-    if (todo.sync && todo.sync.error) actions.push({ label: `錯誤：${todo.sync.error}`, run: () => {} });
+      actions.push({
+        label: '重新同步',
+        run: () => syncTodo(todo).then((s) => toast(s.status === 'ok' ? '已同步' : `同步失敗：${s.error}`, s.status === 'error' ? 'error' : 'ok')),
+      });
     actions.push({
-      label: '刪除（僅刪除 App 內）',
+      label: '刪除',
       danger: true,
       run: () => {
         db().todos = db().todos.filter((t) => t !== todo);
@@ -220,45 +233,180 @@ function bindTodoList(root, rerender) {
         rerender();
       },
     });
-    sheet(actions);
+    const title = todo.sync && todo.sync.error ? `同步失敗：${todo.sync.error}` : todo.title;
+    sheet(actions, title);
   });
 }
+
+// ---------- 首頁 ----------
+
+function viewHome() {
+  const now = new Date();
+  const todos = db().todos;
+  const open = todos.filter((t) => !t.done);
+  const focus = open
+    .filter((t) => (t.due && dueInfo(t.due).diff <= 0) || t.priority === 'high')
+    .sort((a, b) => (a.due || '9').localeCompare(b.due || '9'))
+    .slice(0, 4);
+  const upcoming = db()
+    .events.filter((e) => new Date(e.end) >= now)
+    .sort((a, b) => new Date(a.start) - new Date(b.start))
+    .slice(0, 3);
+  const pending = pendingCount();
+  const hour = now.getHours();
+  const greet = hour < 5 ? '夜深了' : hour < 11 ? '早安' : hour < 14 ? '午安' : hour < 18 ? '下午好' : '晚安';
+
+  $app.innerHTML = `
+    ${nav({
+      title: '隨手記',
+      actions: `<a class="icon-btn" href="#/appearance" aria-label="外觀">${icon('palette')}</a>
+                <a class="icon-btn" href="#/settings" aria-label="設定">${icon('gear')}</a>`,
+    })}
+    <main class="page">
+      <p class="eyebrow">${now.getMonth() + 1}月${now.getDate()}日 星期${WEEK[now.getDay()]}</p>
+      <h1 class="large-title">${greet}</h1>
+
+      <div class="tiles">
+        <a class="tile" href="#/todo" style="${featureVars('todo')}">
+          <div class="tile-head"><span class="tile-icon">${icon('checklist')}</span><span class="tile-count">${open.length}</span></div>
+          <div class="tile-name">待辦事項<small>${open.length ? `${open.length} 件未完成` : '寫下要做的事'}</small></div>
+        </a>
+        <a class="tile" href="#/notes" style="${featureVars('note')}">
+          <div class="tile-head"><span class="tile-icon">${icon('note')}</span><span class="tile-count">${db().notes.length}</span></div>
+          <div class="tile-name">筆記<small>${db().notes.length ? '寫下想法・送到 OneNote' : '開始第一篇筆記'}</small></div>
+        </a>
+        <a class="tile wide" href="#/events" style="${featureVars('event')}">
+          <div class="tile-head">
+            <span class="tile-icon day">${now.getDate()}</span>
+            <span class="tile-name">行程</span>
+            ${icon('chevronRight', 'chev')}
+          </div>
+          <div class="upcoming">
+            ${
+              upcoming.length
+                ? upcoming
+                    .map((e) => {
+                      const s = new Date(e.start);
+                      const d = dayDiff(s);
+                      const when = d === 0 ? '今天' : d === 1 ? '明天' : `${s.getMonth() + 1}/${s.getDate()}（${WEEK[s.getDay()]}）`;
+                      return `<div class="up-row"><span class="bar"></span><div class="t"><b>${esc(e.title)}</b>
+                        <small>${when}${e.allDay ? ' 全天' : ' ' + formatTime(s)}${e.location ? ` · ${esc(e.location)}` : ''}</small></div></div>`;
+                    })
+                    .join('')
+                : `<div class="up-empty">一句話加入行事曆，例如「明天 14:00 開會」</div>`
+            }
+          </div>
+        </a>
+      </div>
+
+      ${
+        pending
+          ? `<button class="notice" id="retry">${icon('alert')}<span>${pending} 筆尚未同步</span><b>重試</b></button>`
+          : ''
+      }
+
+      ${
+        focus.length
+          ? `<h2 class="group-header big">今天要做<a href="#/todo/list">全部</a></h2>
+             <ul class="group rows" id="focus">${focus.map(todoRow).join('')}</ul>`
+          : ''
+      }
+    </main>`;
+
+  document.getElementById('retry')?.addEventListener('click', async () => {
+    await retryPending();
+    toast(pendingCount() ? '仍有項目同步失敗，請檢查設定' : '全部同步完成', pendingCount() ? 'error' : 'ok');
+    viewHome();
+  });
+  const focusEl = document.getElementById('focus');
+  if (focusEl) bindTodoList(focusEl, viewHome);
+}
+
+// ---------- 待辦事項 ----------
 
 function viewTodo() {
   const configured = todoSync.isConfigured(settings());
   const openCount = () => db().todos.filter((t) => !t.done).length;
+  let priority = 'normal';
+
   $app.innerHTML = `
-    ${header('待辦事項', { back: '#/', right: `<a class="hbtn pill" href="#/todo/list">清單 <b id="count">${openCount()}</b></a>` })}
-    <main class="page">
-      <form id="form" class="card form">
-        <textarea name="title" rows="3" placeholder="要做什麼？&#10;（一行一件，可一次輸入多件）" required></textarea>
-        <div class="row">
-          <label>截止日<input type="date" name="due"></label>
-          <label>優先度
-            <select name="priority"><option value="normal">一般</option><option value="high">高</option><option value="low">低</option></select>
-          </label>
+    ${nav({
+      back: '#/',
+      backLabel: '隨手記',
+      title: '待辦事項',
+      actions: `<a class="pill-btn" href="#/todo/list">${icon('list')}清單<span class="count" id="count">${openCount()}</span></a>`,
+    })}
+    <main class="page" style="${featureVars('todo')}">
+      <h1 class="large-title">待辦事項</h1>
+      <form id="form">
+        <div class="composer">
+          <textarea name="title" rows="1" placeholder="新增待辦…" enterkeyhint="enter" required></textarea>
+          <div class="composer-foot"><span>一行一件，可一次輸入多件</span></div>
         </div>
-        <input name="tags" placeholder="標籤（空白分隔，可留空）" autocomplete="off">
-        <textarea name="note" rows="2" placeholder="備註（可留空）"></textarea>
-        <button class="primary" type="submit">${configured ? '新增並同步' : '新增'}</button>
+
+        <ul class="group icons" style="margin-top:16px">
+          <li class="cell">
+            <span class="cell-icon" style="--c: var(--event); --on-c: var(--on-event)">${icon('calendar')}</span>
+            <span class="cell-label">截止日</span>
+            <label class="value-pill empty-val" id="duePill"><span id="dueText">未設定</span><input type="date" name="due" aria-label="截止日"></label>
+          </li>
+          <li class="cell">
+            <span class="cell-icon" style="--c: var(--note); --on-c: var(--on-note)">${icon('flag')}</span>
+            <span class="cell-label">優先度</span>
+            <div class="seg small" id="prio">
+              <button type="button" data-p="low">低</button><button type="button" data-p="normal" class="on">一般</button><button type="button" data-p="high">高</button>
+            </div>
+          </li>
+          <li class="cell">
+            <span class="cell-icon" style="--c: var(--todo); --on-c: var(--on-todo)">${icon('tag')}</span>
+            <input name="tags" placeholder="標籤（空白分隔）" autocomplete="off">
+          </li>
+          <li class="cell">
+            <span class="cell-icon" style="--c: var(--gray)">${icon('text')}</span>
+            <input name="note" placeholder="備註" autocomplete="off">
+          </li>
+        </ul>
+
+        <button class="btn btn-primary" type="submit" style="margin-top:20px">${icon(configured ? 'send' : 'plus')}${configured ? '新增並同步' : '新增'}</button>
       </form>
-      ${configured ? '' : hint('尚未設定專案管理工具，待辦只會存在 App 內。<a href="#/settings">前往設定</a>')}
-      <h2 class="section">最近新增</h2>
-      <ul class="list" id="recent"></ul>
-      <a class="more" href="#/todo/list">查看全部清單 ›</a>
+      ${configured ? '' : `<p class="caption">尚未連結專案管理工具，待辦只會存在 App 內 · <a href="#/settings">設定</a></p>`}
+
+      <h2 class="group-header big">最近新增<a href="#/todo/list">全部</a></h2>
+      <ul class="group rows" id="recent"></ul>
     </main>`;
 
+  const form = document.getElementById('form');
   const recent = document.getElementById('recent');
+  const titleEl = form.title;
+  const dueInput = form.due;
+
   const renderRecent = () => {
     const items = [...db().todos].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5);
-    recent.innerHTML = items.length ? items.map(todoItem).join('') : '<li class="empty">還沒有待辦事項</li>';
+    recent.innerHTML = items.length
+      ? items.map(todoRow).join('')
+      : `<li class="empty">${icon('checklist')}還沒有待辦事項</li>`;
     document.getElementById('count').textContent = openCount();
   };
   refreshCurrent = renderRecent;
   renderRecent();
   bindTodoList(recent, renderRecent);
 
-  const form = document.getElementById('form');
+  const renderDue = () => {
+    const info = dueInfo(dueInput.value);
+    document.getElementById('dueText').textContent = info ? `${dueInput.value.replace(/-/g, '/')}（${info.text}）` : '未設定';
+    document.getElementById('duePill').classList.toggle('empty-val', !info);
+  };
+  dueInput.addEventListener('change', renderDue);
+
+  document.getElementById('prio').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    priority = b.dataset.p;
+    document.querySelectorAll('#prio button').forEach((x) => x.classList.toggle('on', x === b));
+  });
+
+  titleEl.addEventListener('input', () => autosize(titleEl, 56));
+
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const f = new FormData(form);
@@ -269,7 +417,7 @@ function viewTodo() {
       title,
       note: String(f.get('note')).trim(),
       due: f.get('due') || null,
-      priority: f.get('priority'),
+      priority,
       tags: splitTags(f.get('tags')),
       done: false,
       createdAt: new Date().toISOString(),
@@ -278,39 +426,59 @@ function viewTodo() {
     db().todos.push(...created);
     save();
     form.reset();
+    autosize(titleEl, 56);
+    renderDue();
     renderRecent();
-    toast(`已加入 ${created.length} 件待辦`);
+    if (!configured) toast(`已加入 ${created.length} 件待辦`);
     Promise.all(created.map(syncTodo)).then((results) => {
       const failed = results.filter((s) => s && s.status === 'error');
       if (failed.length) toast(`同步失敗：${failed[0].error}`, 'error');
-      else if (configured) toast('已同步到專案管理工具');
+      else if (configured) toast(`已加入並同步 ${created.length} 件`);
     });
   });
-  form.title.focus();
+  titleEl.focus();
+}
+
+function groupTodos(items) {
+  const groups = [
+    ['逾期', []],
+    ['今天', []],
+    ['明天', []],
+    ['之後', []],
+    ['未排定', []],
+  ];
+  for (const t of items) {
+    const info = dueInfo(t.due);
+    const idx = !info ? 4 : info.diff < 0 ? 0 : info.diff === 0 ? 1 : info.diff === 1 ? 2 : 3;
+    groups[idx][1].push(t);
+  }
+  const rank = { high: 0, normal: 1, low: 2 };
+  for (const [, list] of groups)
+    list.sort((a, b) => (a.due || '').localeCompare(b.due || '') || rank[a.priority] - rank[b.priority] || b.createdAt.localeCompare(a.createdAt));
+  return groups.filter(([, list]) => list.length);
 }
 
 function viewTodoList() {
   $app.innerHTML = `
-    ${header('待辦清單', { back: '#/todo', right: '<a class="hbtn" href="#/todo" aria-label="新增">＋</a>' })}
-    <main class="page">
-      <div class="seg" id="tabs">
-        <button data-tab="open">未完成</button><button data-tab="done">已完成</button><button data-tab="all">全部</button>
-      </div>
-      <ul class="list" id="list"></ul>
+    ${nav({ back: '#/todo', backLabel: '待辦事項', title: '清單', actions: `<a class="icon-btn" href="#/todo" aria-label="新增">${icon('plus')}</a>` })}
+    <main class="page" style="${featureVars('todo')}">
+      <h1 class="large-title">清單</h1>
+      <div class="seg" id="tabs"><button data-tab="open">未完成</button><button data-tab="done">已完成</button><button data-tab="all">全部</button></div>
+      <div id="list"></div>
     </main>`;
   const list = document.getElementById('list');
   const render = () => {
     document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === ui.todoTab));
-    const items = db()
-      .todos.filter((t) => (ui.todoTab === 'all' ? true : ui.todoTab === 'done' ? t.done : !t.done))
-      .sort((a, b) => {
-        if (a.done !== b.done) return a.done ? 1 : -1;
-        const rank = { high: 0, normal: 1, low: 2 };
-        if (rank[a.priority] !== rank[b.priority]) return rank[a.priority] - rank[b.priority];
-        if ((a.due || '9') !== (b.due || '9')) return (a.due || '9').localeCompare(b.due || '9');
-        return b.createdAt.localeCompare(a.createdAt);
-      });
-    list.innerHTML = items.length ? items.map(todoItem).join('') : '<li class="empty">這裡沒有項目</li>';
+    const open = db().todos.filter((t) => !t.done);
+    const done = db().todos.filter((t) => t.done).sort((a, b) => (b.doneAt || '').localeCompare(a.doneAt || ''));
+    let sections = [];
+    if (ui.todoTab !== 'done') sections = groupTodos(open);
+    if (ui.todoTab !== 'open' && done.length) sections.push(['已完成', done]);
+    list.innerHTML = sections.length
+      ? sections
+          .map(([name, items]) => `<h2 class="group-header">${name}<span>${items.length}</span></h2><ul class="group rows">${items.map(todoRow).join('')}</ul>`)
+          .join('')
+      : `<div class="group" style="margin-top:20px"><div class="empty">${icon('checkCircle')}${ui.todoTab === 'done' ? '還沒有完成的項目' : '全部完成了！'}</div></div>`;
   };
   refreshCurrent = render;
   document.getElementById('tabs').addEventListener('click', (e) => {
@@ -344,55 +512,50 @@ function viewNoteEditor(id) {
     } catch {}
   }
   const note = existing || draft || { title: '', content: '', tags: [] };
-  let tags = [...(note.tags || [])];
+  const tags = [...(note.tags || [])];
   const ready = onenoteReady();
+  const created = existing ? new Date(existing.createdAt) : new Date();
 
   $app.innerHTML = `
-    ${header(existing ? '編輯筆記' : '新筆記', {
+    ${nav({
       back: existing ? '#/notes/list' : '#/',
-      right: `<a class="hbtn pill" href="#/notes/list">☰ 全部 <b>${db().notes.length}</b></a>`,
+      backLabel: existing ? '筆記' : '隨手記',
+      actions: `<a class="icon-btn" href="#/notes/list" aria-label="全部筆記">${icon('list')}</a>
+                ${existing ? `<button class="icon-btn" id="more" aria-label="更多">${icon('ellipsis')}</button>` : ''}`,
     })}
-    <main class="page">
-      <div class="card form editor">
-        <input id="title" class="title-input" placeholder="標題" value="${esc(note.title)}">
-        <div class="tags-input" id="tagbox">
-          <span id="chips"></span>
-          <input id="tagInput" placeholder="${tags.length ? '' : '＋ 加標籤'}" autocomplete="off" enterkeyhint="done">
-        </div>
-        <div class="suggest" id="suggest"></div>
-        <textarea id="content" placeholder="開始寫筆記…">${esc(note.content)}</textarea>
-      </div>
+    <main class="page has-toolbar" style="${featureVars('note')}">
+      <p class="note-date">${longDate(created)}</p>
       <div id="status"></div>
-      <div class="actions">
-        ${
-          ready
-            ? '<button class="primary" id="send">儲存並送到 OneNote</button><button id="saveOnly">只儲存</button>'
-            : '<button class="primary" id="saveOnly">儲存</button><button id="share">分享到 OneNote App…</button>'
-        }
-        ${existing ? '<button class="danger" id="delete">刪除筆記</button>' : ''}
-      </div>
-      ${ready ? '' : hint('尚未連結 OneNote，可先用「分享」手動送出。<a href="#/settings">前往設定 OneNote 自動同步</a>')}
-    </main>`;
+      <input id="title" class="note-title" placeholder="標題" value="${esc(note.title)}" autocomplete="off">
+      <div class="tagrow" id="tagrow"></div>
+      <div class="suggest" id="suggest"></div>
+      <textarea id="content" class="note-body" placeholder="開始書寫…">${esc(note.content)}</textarea>
+    </main>
+    <footer class="toolbar">
+      ${
+        ready
+          ? `<button class="text-btn" id="saveOnly">只儲存</button>
+             <span class="spacer"></span>
+             <button class="capsule primary" id="send">${icon('send')}送到 OneNote</button>`
+          : `<button class="icon-btn plain" id="share" aria-label="分享到 OneNote App">${icon('share')}</button>
+             <span class="spacer"><a href="#/settings">連結 OneNote 自動同步</a></span>
+             <button class="capsule primary" id="saveOnly">${icon('check')}儲存</button>`
+      }
+    </footer>`;
 
   const $ = (sel) => document.getElementById(sel);
   const titleEl = $('title');
   const contentEl = $('content');
-  const tagInput = $('tagInput');
-
-  const autosize = () => {
-    contentEl.style.height = 'auto';
-    contentEl.style.height = Math.max(240, contentEl.scrollHeight) + 'px';
-  };
 
   const renderStatus = () => {
     const current = existing && db().notes.find((n) => n.id === existing.id);
-    if (!current || !current.sync) return ($('status').innerHTML = '');
-    const s = current.sync;
-    $('status').innerHTML = `<p class="status-line">${badge(s, '已送到 OneNote')}
-      ${s.at ? `<small>${timeAgo(s.at)}</small>` : ''}
-      ${s.url ? `<a href="${esc(s.url)}" target="_blank" rel="noopener">在 OneNote 開啟</a>` : ''}
-      ${s.error ? `<small class="err">${esc(s.error)}</small>` : ''}
-      ${current.editedAfterSync ? '<small>（送出後有修改，再送一次會建立新頁面）</small>' : ''}</p>`;
+    const s = current && current.sync;
+    if (!s || s.status === 'off') return ($('status').innerHTML = '');
+    if (s.status === 'pending') return ($('status').innerHTML = `<p class="sync-pill">${icon('spinner', 'spin')}傳送到 OneNote…</p>`);
+    if (s.status === 'error') return ($('status').innerHTML = `<p class="sync-pill error">${icon('alert')}送出失敗：${esc(s.error)}</p>`);
+    $('status').innerHTML = `<p class="sync-pill ok">${icon('checkCircle')}已送到 OneNote · ${shortTime(s.at)}
+      ${s.url ? `· <a href="${esc(s.url)}" target="_blank" rel="noopener">開啟</a>` : ''}
+      ${current.editedAfterSync ? '· 之後有修改' : ''}</p>`;
   };
 
   const saveDraft = () => {
@@ -401,20 +564,45 @@ function viewNoteEditor(id) {
   };
 
   const renderTags = () => {
-    $('chips').innerHTML = tags.map((t, i) => `<button class="chip" data-i="${i}">#${esc(t)} ×</button>`).join('');
-    tagInput.placeholder = tags.length ? '' : '＋ 加標籤';
+    $('tagrow').innerHTML =
+      tags.map((t, i) => `<button class="chip" data-i="${i}">#${esc(t)}${icon('xmark')}</button>`).join('') +
+      `<label class="tag-entry">${icon('tag')}<input id="tagInput" placeholder="加標籤" autocomplete="off" enterkeyhint="done"></label>`;
     const sugg = allNoteTags().filter((t) => !tags.includes(t)).slice(0, 12);
     $('suggest').innerHTML = sugg.map((t) => `<button class="chip ghost" data-t="${esc(t)}">#${esc(t)}</button>`).join('');
+    bindTagInput();
   };
 
-  const addTags = (text) => {
+  const addTags = (text, refocus = true) => {
+    const before = tags.length;
     splitTags(text).forEach((t) => !tags.includes(t) && tags.push(t));
-    tagInput.value = '';
+    if (tags.length === before) {
+      $('tagInput').value = '';
+      return;
+    }
     renderTags();
     saveDraft();
+    if (refocus) $('tagInput').focus();
   };
 
-  $('chips').addEventListener('click', (e) => {
+  function bindTagInput() {
+    const input = $('tagInput');
+    input.addEventListener('keydown', (e) => {
+      if (e.isComposing) return; // 注音/拼音選字中
+      if (e.key === 'Enter' || e.key === ',' || e.key === ' ') {
+        e.preventDefault();
+        addTags(input.value);
+      } else if (e.key === 'Backspace' && !input.value && tags.length) {
+        tags.pop();
+        renderTags();
+        saveDraft();
+        $('tagInput').focus();
+      }
+    });
+    input.addEventListener('input', () => /[\s,，、]$/.test(input.value) && addTags(input.value));
+    input.addEventListener('blur', () => input.value.trim() && addTags(input.value, false));
+  }
+
+  $('tagrow').addEventListener('click', (e) => {
     const b = e.target.closest('.chip');
     if (!b) return;
     tags.splice(Number(b.dataset.i), 1);
@@ -423,30 +611,23 @@ function viewNoteEditor(id) {
   });
   $('suggest').addEventListener('click', (e) => {
     const b = e.target.closest('.chip');
-    if (b) addTags(b.dataset.t);
+    if (b) addTags(b.dataset.t, false);
   });
-  $('tagbox').addEventListener('click', (e) => e.target.id === 'tagbox' && tagInput.focus());
-  tagInput.addEventListener('keydown', (e) => {
-    if (e.isComposing) return; // 注音/拼音選字中
-    if (e.key === 'Enter' || e.key === ',' || e.key === ' ') {
+  titleEl.addEventListener('input', saveDraft);
+  titleEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.isComposing) {
       e.preventDefault();
-      addTags(tagInput.value);
-    } else if (e.key === 'Backspace' && !tagInput.value && tags.length) {
-      tags.pop();
-      renderTags();
-      saveDraft();
+      contentEl.focus();
     }
   });
-  tagInput.addEventListener('input', () => /[\s,，、]$/.test(tagInput.value) && addTags(tagInput.value));
-  tagInput.addEventListener('blur', () => tagInput.value.trim() && addTags(tagInput.value));
-  titleEl.addEventListener('input', saveDraft);
   contentEl.addEventListener('input', () => {
-    autosize();
+    autosize(contentEl);
     saveDraft();
   });
 
   const persist = () => {
-    if (tagInput.value.trim()) addTags(tagInput.value);
+    const pendingTag = $('tagInput').value;
+    if (pendingTag.trim()) addTags(pendingTag, false);
     const title = titleEl.value.trim();
     const content = contentEl.value.trim();
     if (!title && !content) {
@@ -476,10 +657,11 @@ function viewNoteEditor(id) {
   });
 
   $('send')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
     const saved = persist();
     if (!saved) return;
-    e.target.disabled = true;
-    e.target.textContent = '傳送中…';
+    btn.disabled = true;
+    btn.innerHTML = `${icon('spinner', 'spin')}傳送中`;
     const result = await syncNote(saved);
     if (result.status === 'ok') {
       toast('已送到 OneNote');
@@ -487,11 +669,11 @@ function viewNoteEditor(id) {
       else if (/^#\/notes(\/new)?$/.test(location.hash)) viewNoteEditor(null); // 換成空白新筆記
       else location.hash = '#/notes/new';
     } else {
-      toast(`送出失敗：${result.error}（已存在 App 內，稍後可重試）`, 'error');
+      toast(`送出失敗：${result.error}`, 'error');
       if (!existing) location.hash = `#/notes/edit/${saved.id}`;
       else {
-        e.target.disabled = false;
-        e.target.textContent = '儲存並送到 OneNote';
+        btn.disabled = false;
+        btn.innerHTML = `${icon('send')}送到 OneNote`;
       }
     }
   });
@@ -511,64 +693,92 @@ function viewNoteEditor(id) {
     if (!existing) location.hash = `#/notes/edit/${saved.id}`;
   });
 
-  $('delete')?.addEventListener('click', () =>
-    sheet([
-      {
-        label: '刪除這篇筆記（OneNote 上的不會被刪）',
-        danger: true,
-        run: () => {
-          db().notes = db().notes.filter((n) => n !== existing);
-          save();
-          location.hash = '#/notes/list';
-        },
+  $('more')?.addEventListener('click', () => {
+    const actions = [];
+    if (existing.sync && existing.sync.url) actions.push({ label: '在 OneNote 開啟', run: () => window.open(existing.sync.url, '_blank') });
+    if (ready && existing.sync && existing.sync.status === 'ok')
+      actions.push({ label: '再送一次（建立新頁面）', run: () => $('send').click() });
+    actions.push({
+      label: '刪除筆記',
+      danger: true,
+      run: () => {
+        db().notes = db().notes.filter((n) => n !== existing);
+        save();
+        toast('已刪除');
+        location.hash = '#/notes/list';
       },
-    ])
-  );
+    });
+    sheet(actions, 'OneNote 上已送出的頁面不會被刪除');
+  });
 
   refreshCurrent = renderStatus;
   renderTags();
   renderStatus();
-  autosize();
+  autosize(contentEl);
   if (!existing) (note.title ? contentEl : titleEl).focus();
+}
+
+function noteGroups(notes) {
+  const groups = new Map();
+  for (const n of notes) {
+    const d = new Date(n.updatedAt);
+    const diff = dayDiff(d);
+    const key =
+      diff === 0 ? '今天' : diff === -1 ? '昨天' : diff > -7 ? '過去 7 天' : diff > -30 ? '過去 30 天' : `${d.getFullYear()}年${d.getMonth() + 1}月`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(n);
+  }
+  return [...groups.entries()];
 }
 
 function viewNoteList() {
   $app.innerHTML = `
-    ${header('全部筆記', { back: '#/', right: '<a class="hbtn" href="#/notes/new" aria-label="新筆記">＋</a>' })}
-    <main class="page">
-      <input type="search" id="q" class="search" placeholder="搜尋標題或內容" value="${esc(ui.noteQuery)}">
-      <div class="tagbar" id="tagbar"></div>
-      <ul class="list notes" id="list"></ul>
-    </main>`;
+    ${nav({ back: '#/', backLabel: '隨手記', title: '筆記' })}
+    <main class="page has-toolbar" style="${featureVars('note')}">
+      <h1 class="large-title">筆記</h1>
+      <label class="search">${icon('search')}<input type="search" id="q" placeholder="搜尋" value="${esc(ui.noteQuery)}"></label>
+      <div class="chipbar" id="tagbar"></div>
+      <div id="list"></div>
+    </main>
+    <footer class="toolbar">
+      <span style="width:34px"></span>
+      <span class="spacer" id="total"></span>
+      <a class="icon-btn plain" href="#/notes/new" aria-label="新筆記" style="color: var(--note)">${icon('note')}</a>
+    </footer>`;
   const list = document.getElementById('list');
   const tagbar = document.getElementById('tagbar');
   const render = () => {
     const tags = allNoteTags();
     if (ui.noteTag && !tags.includes(ui.noteTag)) ui.noteTag = '';
     tagbar.innerHTML = tags.length
-      ? [`<button class="chip ${ui.noteTag ? 'ghost' : ''}" data-t="">全部</button>`]
-          .concat(tags.map((t) => `<button class="chip ${ui.noteTag === t ? '' : 'ghost'}" data-t="${esc(t)}">#${esc(t)}</button>`))
+      ? [`<button class="chip ${ui.noteTag ? 'ghost' : 'on'}" data-t="">全部</button>`]
+          .concat(tags.map((t) => `<button class="chip ${ui.noteTag === t ? 'on' : 'ghost'}" data-t="${esc(t)}">#${esc(t)}</button>`))
           .join('')
       : '';
     const q = ui.noteQuery.toLowerCase();
     const items = db()
       .notes.filter((n) => !ui.noteTag || n.tags.includes(ui.noteTag))
-      .filter((n) => !q || (n.title + '\n' + n.content).toLowerCase().includes(q))
+      .filter((n) => !q || (n.title + '\n' + n.content + '\n' + n.tags.join(' ')).toLowerCase().includes(q))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    document.getElementById('total').textContent = `${db().notes.length} 則筆記`;
     list.innerHTML = items.length
-      ? items
+      ? noteGroups(items)
           .map(
-            (n) => `<li><a class="item note-item" href="#/notes/edit/${n.id}">
-              <div class="body">
-                <div class="title">${esc(n.title || n.content.split('\n')[0] || '未命名筆記')}</div>
-                <div class="snippet">${esc(n.content.slice(0, 80))}</div>
-                <div class="meta">${timeAgo(n.updatedAt)} ${n.tags.map((t) => `<span class="tag">#${esc(t)}</span>`).join('')}</div>
-              </div>
-              ${badge(n.sync, 'OneNote ✓')}
-            </a></li>`
+            ([name, notes]) => `<h2 class="group-header">${name}</h2><ul class="group">${notes
+              .map((n) => {
+                const lines = n.content.split('\n').map((s) => s.trim()).filter(Boolean);
+                const title = n.title || lines[0] || '未命名筆記';
+                const snippet = (n.title ? lines[0] : lines[1]) || '沒有其他內容';
+                return `<li><a class="cell note-row tap" href="#/notes/edit/${n.id}">
+                  <div class="head"><b>${esc(title)}</b>${syncIcon(n.sync)}</div>
+                  <p><time>${shortTime(n.updatedAt)}</time>${esc(snippet)}</p>
+                  ${n.tags.length ? `<div class="tags">${n.tags.map((t) => '#' + esc(t)).join('  ')}</div>` : ''}
+                </a></li>`;
+              })
+              .join('')}</ul>`
           )
           .join('')
-      : `<li class="empty">${db().notes.length ? '沒有符合的筆記' : '還沒有筆記'}</li>`;
+      : `<div class="group" style="margin-top:8px"><div class="empty">${icon('note')}${db().notes.length ? '沒有符合的筆記' : '還沒有筆記，點右下角開始寫'}</div></div>`;
   };
   refreshCurrent = render;
   document.getElementById('q').addEventListener('input', (e) => {
@@ -589,35 +799,47 @@ function viewNoteList() {
 const MODE_TEXT = {
   shortcut: (s) => `透過捷徑「${s.shortcutName}」寫入 iPhone 行事曆`,
   ics: () => '開啟 iPhone「加入行事曆」畫面',
-  outlook: () => '寫入公司 Outlook 行事曆（會同步到 iPhone 行事曆）',
+  outlook: () => '寫入公司 Outlook 行事曆',
 };
+
+function datebox(d, mini = false) {
+  return `<div class="datebox${mini ? ' mini' : ''}"><small>${d.getMonth() + 1}月</small><b>${d.getDate()}</b>${mini ? '' : `<span>週${WEEK[d.getDay()]}</span>`}</div>`;
+}
 
 function viewEvents() {
   const cfg = settings().calendar;
   $app.innerHTML = `
-    ${header('行程', { back: '#/' })}
-    <main class="page">
-      <div class="card form">
-        <textarea id="input" rows="3" placeholder="例如：&#10;2026/11/12 9:30-12:00 @會議室 [期末審查]&#10;2026/11/12 9:00-10:00 院前瞻期末報告會議"></textarea>
-        <div class="row quick">
-          <button id="template">插入格式</button>
-          <button id="tomorrow">明天</button>
-          <button id="clear">清除</button>
+    ${nav({ back: '#/', backLabel: '隨手記', title: '行程' })}
+    <main class="page" style="${featureVars('event')}">
+      <h1 class="large-title">行程</h1>
+      <div class="composer">
+        <textarea id="input" rows="2" placeholder="2026/11/12 9:30-12:00 @會議室 [期末審查]"></textarea>
+        <div class="quick">
+          <button class="capsule" id="template">${icon('sparkles')}插入格式</button>
+          <button class="capsule" id="today">今天</button>
+          <button class="capsule" id="tomorrow">明天</button>
+          <button class="capsule push" id="clear" aria-label="清除">${icon('xmark')}</button>
         </div>
       </div>
       <div id="preview"></div>
-      <button class="primary wide" id="add" disabled>加入行事曆</button>
-      <p class="hint center">${esc(MODE_TEXT[cfg.mode](cfg))}　<a href="#/settings">變更</a></p>
-      <h2 class="section">最近加入</h2>
-      <ul class="list" id="history"></ul>
+      <div class="ev-actions">
+        <button class="btn btn-primary" id="add" disabled>${icon('calendarPlus')}加入行事曆</button>
+        <p class="caption">${esc(MODE_TEXT[cfg.mode](cfg))} · <a href="#/settings">變更</a></p>
+      </div>
+
+      <h2 class="group-header big">最近加入</h2>
+      <ul class="group" id="history"></ul>
+
       <details class="help">
-        <summary>可以怎麼寫？</summary>
-        <ul>
-          <li>日期：<code>2026/11/12</code>、<code>11/12</code>、<code>115/11/12</code>（民國）、<code>11月12日</code>、<code>今天/明天/後天</code>、<code>週三</code>、<code>下週五</code></li>
-          <li>時間：<code>9:30-12:00</code>、<code>9：30～12：00</code>、<code>下午2點半-4點</code>；只寫開始時間就用預設長度（${cfg.defaultDuration} 分鐘）；沒寫時間就是全天</li>
-          <li>地點：<code>@地點</code>　名稱：<code>[會議名稱]</code>（沒括號時，剩下的文字就是名稱）</li>
-          <li>標籤：<code>#專案A</code>（會寫進備註）</li>
-        </ul>
+        <summary>${icon('chevronRight')}可以怎麼寫？</summary>
+        <div class="group">
+          <dl>
+            <dt>日期</dt><dd><code>2026/11/12</code> <code>11/12</code> <code>115/11/12</code> <code>11月12日</code> <code>明天</code> <code>下週五</code></dd>
+            <dt>時間</dt><dd><code>9:30-12:00</code> <code>9：30～12：00</code> <code>下午2點半-4點</code><br>只寫開始時間＝預設 ${cfg.defaultDuration} 分鐘；沒寫時間＝全天</dd>
+            <dt>地點與名稱</dt><dd><code>@地點</code> <code>[會議名稱]</code>，沒有括號時剩下的文字就是名稱</dd>
+            <dt>標籤</dt><dd><code>#專案A</code> 會寫進備註</dd>
+          </dl>
+        </div>
       </details>
     </main>`;
 
@@ -626,34 +848,46 @@ function viewEvents() {
   let parsed = null;
 
   const update = () => {
+    autosize(input, 56);
     const text = input.value.trim();
     parsed = text ? parseEvent(text, { defaultDuration: Number(cfg.defaultDuration) }) : null;
     $('add').disabled = !parsed || !parsed.ok;
     if (!parsed) return ($('preview').innerHTML = '');
-    $('preview').innerHTML = parsed.ok
-      ? `<div class="card preview">
-          <div class="pv-title">${esc(parsed.title)}</div>
-          <div>🕘 ${esc(formatRange(parsed))}</div>
-          ${parsed.location ? `<div>📍 ${esc(parsed.location)}</div>` : ''}
-          ${parsed.notes ? `<div>📝 ${esc(parsed.notes)}</div>` : ''}
-          ${parsed.tags.length ? `<div>🏷 ${parsed.tags.map((t) => '#' + esc(t)).join(' ')}</div>` : ''}
-        </div>`
-      : `<div class="card preview bad">${parsed.errors.map((e) => `<div>⚠︎ ${esc(e)}</div>`).join('')}</div>`;
+    if (!parsed.ok) {
+      $('preview').innerHTML = `<div class="event-card bad">${parsed.errors.map((e) => `<div class="ev-line">${icon('alert')}<span>${esc(e)}</span></div>`).join('')}</div>`;
+      return;
+    }
+    const time = parsed.allDay ? '全天' : `${formatTime(parsed.start)} – ${formatTime(parsed.end)}`;
+    $('preview').innerHTML = `<div class="event-card">
+        ${datebox(parsed.start)}
+        <div class="ev-body">
+          <div class="ev-title">${esc(parsed.title)}</div>
+          <div class="ev-line">${icon('clock')}<span>${time}</span></div>
+          ${parsed.location ? `<div class="ev-line">${icon('pin')}<span>${esc(parsed.location)}</span></div>` : ''}
+          ${parsed.notes ? `<div class="ev-line">${icon('text')}<span>${esc(parsed.notes)}</span></div>` : ''}
+          ${parsed.tags.length ? `<div class="ev-line">${icon('tag')}<span>${parsed.tags.map((t) => '#' + esc(t)).join(' ')}</span></div>` : ''}
+        </div>
+      </div>`;
   };
 
   const insert = (text) => {
     input.value = text;
     input.focus();
-    const pos = text.indexOf('@');
+    const pos = text.indexOf('@地點');
     if (pos >= 0) input.setSelectionRange(pos + 1, pos + 3);
     update();
   };
+  const withDate = (d) => {
+    const rest = input.value.replace(/^\s*(\d{2,4}\/\d{1,2}\/\d{1,2}|今天|明天|後天)\s*/, '');
+    insert(`${formatDate(d)} ${rest || '09:00-10:00 @地點 [會議名稱]'}`);
+  };
 
   $('template').addEventListener('click', () => insert(`${formatDate(new Date())} 09:00-10:00 @地點 [會議名稱]`));
+  $('today').addEventListener('click', () => withDate(new Date()));
   $('tomorrow').addEventListener('click', () => {
     const d = new Date();
     d.setDate(d.getDate() + 1);
-    insert(`${formatDate(d)} ${input.value.replace(/^\s*\d{2,4}\/\d{1,2}\/\d{1,2}\s*/, '') || '09:00-10:00 @地點 [會議名稱]'}`);
+    withDate(d);
   });
   $('clear').addEventListener('click', () => insert(''));
   input.addEventListener('input', update);
@@ -709,35 +943,38 @@ function viewEvents() {
     const items = [...db().events].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 15);
     $('history').innerHTML = items.length
       ? items
-          .map(
-            (r) => `<li class="item" data-id="${r.id}">
-              <div class="body">
-                <div class="title">${esc(r.title)}</div>
-                <div class="meta">${esc(formatRange(toEvent(r)))}${r.location ? ` · 📍${esc(r.location)}` : ''}</div>
-              </div>
-              ${badge(r.sync, cfg.mode === 'outlook' ? '已加入' : '已送出')}
-            </li>`
-          )
+          .map((r) => {
+            const ev = toEvent(r);
+            const time = ev.allDay ? '全天' : `${formatTime(ev.start)} – ${formatTime(ev.end)}`;
+            return `<li data-id="${r.id}"><div class="cell ev-row tap">
+              ${datebox(ev.start, true)}
+              <div class="t"><b>${esc(r.title)}</b><small>週${WEEK[ev.start.getDay()]} ${time}${r.location ? ` · ${esc(r.location)}` : ''}</small></div>
+              ${syncIcon(r.sync)}
+            </div></li>`;
+          })
           .join('')
-      : '<li class="empty">還沒有行程</li>';
+      : `<li class="empty">${icon('calendar')}還沒有行程</li>`;
   };
   $('history').addEventListener('click', (e) => {
     const li = e.target.closest('li[data-id]');
     const record = li && db().events.find((r) => r.id === li.dataset.id);
     if (!record) return;
-    sheet([
-      { label: '再加入一次行事曆', run: () => send(toEvent(record), record) },
-      { label: '複製到輸入框修改', run: () => insert(record.text) },
-      {
-        label: '刪除紀錄（行事曆上的不會被刪）',
-        danger: true,
-        run: () => {
-          db().events = db().events.filter((r) => r !== record);
-          save();
-          renderHistory();
+    sheet(
+      [
+        { label: '再加入一次行事曆', run: () => send(toEvent(record), record) },
+        { label: '複製到輸入框修改', run: () => insert(record.text) },
+        {
+          label: '刪除紀錄',
+          danger: true,
+          run: () => {
+            db().events = db().events.filter((r) => r !== record);
+            save();
+            renderHistory();
+          },
         },
-      },
-    ]);
+      ],
+      `${record.title}・${formatRange(toEvent(record))}`
+    );
   });
 
   refreshCurrent = renderHistory;
@@ -745,66 +982,191 @@ function viewEvents() {
   input.focus();
 }
 
+// ---------- 外觀 ----------
+
+function viewAppearance() {
+  const ap = settings().appearance;
+  const mode = effectiveMode(ap.mode);
+  $app.innerHTML = `
+    ${nav({ back: '#/', backLabel: '隨手記', title: '外觀' })}
+    <main class="page">
+      <h1 class="large-title">外觀</h1>
+
+      <div class="preview-phone">
+        <div class="mini-tiles">
+          <div class="mini-tile"><span class="tile-icon" style="${featureVars('todo')}">${icon('checklist')}</span><span class="mini-label">待辦</span></div>
+          <div class="mini-tile"><span class="tile-icon" style="${featureVars('note')}">${icon('note')}</span><span class="mini-label">筆記</span></div>
+          <div class="mini-tile"><span class="tile-icon day" style="${featureVars('event')}">${new Date().getDate()}</span><span class="mini-label">行程</span></div>
+        </div>
+        <div class="btn btn-primary">${icon('send')}主要按鈕</div>
+      </div>
+
+      <h2 class="group-header">顯示模式</h2>
+      <div class="mode-card">
+        <div class="seg" id="modes">
+          ${MODES.map((m) => `<button data-mode="${m.id}" class="${ap.mode === m.id ? 'on' : ''}">${icon({ auto: 'circleHalf', light: 'sun', dark: 'moon' }[m.id])}${m.name}</button>`).join('')}
+        </div>
+      </div>
+      <p class="group-footer">「自動」會跟著 iPhone 的淺色／深色模式切換。</p>
+
+      <h2 class="group-header">配色</h2>
+      <div class="swatches" id="swatches">
+        ${THEMES.map((t) => {
+          const c = t[mode];
+          return `<button class="swatch ${ap.theme === t.id ? 'on' : ''}" data-theme="${t.id}" style="--sw-bg: ${c.bg}">
+            <div class="swatch-art">${['accent', 'todo', 'note', 'event'].map((k) => `<i style="background:${c[k]}"></i>`).join('')}</div>
+            <b>${t.name}</b><small>${t.desc}</small>
+            <span class="tick">${icon('check')}</span>
+          </button>`;
+        }).join('')}
+      </div>
+      <p class="group-footer">配色只套用在 App 內；主畫面圖示不會改變。</p>
+    </main>`;
+
+  document.getElementById('modes').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    ap.mode = b.dataset.mode;
+    save();
+    applyTheme(ap);
+    viewAppearance();
+  });
+  document.getElementById('swatches').addEventListener('click', (e) => {
+    const b = e.target.closest('.swatch');
+    if (!b) return;
+    ap.theme = b.dataset.theme;
+    save();
+    applyTheme(ap);
+    document.querySelectorAll('.swatch').forEach((x) => x.classList.toggle('on', x === b));
+  });
+}
+
 // ---------- 設定 ----------
 
 function viewSettings() {
   const s = settings();
   const signedIn = ms.isSignedIn();
-  $app.innerHTML = `
-    ${header('設定', { back: '#/' })}
-    <main class="page settings">
-      <h2 class="section">待辦事項 → 專案管理工具</h2>
-      <div class="card form">
-        <label>Webhook 網址<input id="webhookUrl" type="url" placeholder="https://your-tool.example.com/api/todos" value="${esc(s.todo.webhookUrl)}"></label>
-        <label>Token（選填，會以 Authorization: Bearer 送出）<input id="token" type="password" autocomplete="off" value="${esc(s.todo.token)}"></label>
-        <button id="ping">測試連線</button>
-      </div>
-      ${hint('每新增一筆待辦，會 POST 一份 JSON 到這個網址。格式請見 README。')}
+  const theme = themeById(s.appearance.theme);
+  const modeName = MODES.find((m) => m.id === s.appearance.mode)?.name || '自動';
+  const calModes = [
+    ['shortcut', 'iOS 捷徑', '一鍵寫入 iPhone 行事曆（推薦）'],
+    ['ics', '行事曆檔案', '免設定，每次需再按「加入」'],
+    ['outlook', '公司 Outlook', '用 Microsoft 帳號寫入，會同步到 iPhone'],
+  ];
 
-      <h2 class="section">Microsoft 帳號（OneNote${s.calendar.mode === 'outlook' ? '、Outlook' : ''}）</h2>
-      <div class="card form">
-        <label>Application (client) ID<input id="clientId" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" value="${esc(s.microsoft.clientId)}"></label>
-        <label>租用戶（公司網域或 Tenant ID）<input id="tenant" placeholder="organizations" value="${esc(s.microsoft.tenant)}"></label>
-        <label>重新導向 URI（註冊 App 時填這個）
-          <div class="copy"><code id="redirect">${esc(ms.redirectUri())}</code><button id="copy">複製</button></div>
-        </label>
+  $app.innerHTML = `
+    ${nav({ back: '#/', backLabel: '隨手記', title: '設定' })}
+    <main class="page">
+      <h1 class="large-title">設定</h1>
+
+      <ul class="group icons">
+        <li><a class="cell tap" href="#/appearance">
+          <span class="cell-icon">${icon('palette')}</span>
+          <span class="cell-label">外觀</span>
+          <span class="cell-value">${esc(theme.name)} · ${modeName}</span>${icon('chevronRight', 'chev')}
+        </a></li>
+      </ul>
+
+      <h2 class="group-header">待辦事項 → 專案管理工具</h2>
+      <ul class="group icons">
+        <li class="cell">
+          <span class="cell-icon" style="${featureVars('todo')}">${icon('link')}</span>
+          <label class="cell-label field"><span>Webhook 網址</span><input id="webhookUrl" type="url" inputmode="url" placeholder="https://…/api/todos" value="${esc(s.todo.webhookUrl)}"></label>
+        </li>
+        <li class="cell">
+          <span class="cell-icon" style="--c: var(--gray)">${icon('key')}</span>
+          <label class="cell-label field"><span>Token（選填）</span><input id="token" type="password" autocomplete="off" placeholder="以 Authorization: Bearer 送出" value="${esc(s.todo.token)}"></label>
+        </li>
+        <li><button class="cell action tap" id="ping">測試連線</button></li>
+      </ul>
+      <p class="group-footer">每新增一筆待辦，會 POST 一份 JSON 到這個網址，格式請見 README。</p>
+
+      <h2 class="group-header">Microsoft 帳號（OneNote${s.calendar.mode === 'outlook' ? '・Outlook' : ''}）</h2>
+      <ul class="group icons">
+        <li class="cell">
+          <span class="cell-icon" style="--c: #0078D4">${icon('key')}</span>
+          <label class="cell-label field"><span>Application (client) ID</span><input id="clientId" placeholder="xxxxxxxx-xxxx-…" autocomplete="off" value="${esc(s.microsoft.clientId)}"></label>
+        </li>
+        <li class="cell">
+          <span class="cell-icon" style="--c: var(--gray)">${icon('building')}</span>
+          <label class="cell-label field"><span>租用戶（公司網域或 Tenant ID）</span><input id="tenant" placeholder="organizations" autocomplete="off" value="${esc(s.microsoft.tenant)}"></label>
+        </li>
+        <li><button class="cell tap" id="copy">
+          <span class="cell-icon" style="--c: var(--gray)">${icon('copy')}</span>
+          <span class="cell-label">重新導向 URI<small>${esc(ms.redirectUri())}</small></span>
+        </button></li>
         ${
           signedIn
-            ? `<p class="status-line">已登入：<b>${esc(ms.account())}</b></p><button id="logout">登出</button>`
-            : '<button class="primary" id="login">登入 Microsoft 帳號</button>'
+            ? `<li class="cell"><span class="cell-icon" style="--c: var(--todo); --on-c: var(--on-todo)">${icon('person')}</span>
+                 <span class="cell-label">已登入<small>${esc(ms.account())}</small></span></li>
+               <li><button class="cell action danger tap" id="logout">登出</button></li>`
+            : `<li><button class="cell action tap" id="login">登入 Microsoft 帳號</button></li>`
         }
-      </div>
-      <div class="card form">
-        <label>OneNote 統一筆記的分區
-          <select id="section" ${signedIn ? '' : 'disabled'}>
-            ${s.onenote.sectionId ? `<option value="${esc(s.onenote.sectionId)}">${esc(s.onenote.sectionName)}</option>` : '<option value="">（尚未選擇）</option>'}
-          </select>
-        </label>
-        <button id="loadSections" ${signedIn ? '' : 'disabled'}>載入我的筆記本分區</button>
-      </div>
+      </ul>
 
-      <h2 class="section">行程 → 行事曆</h2>
-      <div class="card form">
-        <label class="radio"><input type="radio" name="mode" value="shortcut" ${s.calendar.mode === 'shortcut' ? 'checked' : ''}>
-          <span><b>iOS 捷徑（推薦）</b><small>按一下直接寫入 iPhone 行事曆，需先建立一次捷徑</small></span></label>
-        <label class="radio"><input type="radio" name="mode" value="ics" ${s.calendar.mode === 'ics' ? 'checked' : ''}>
-          <span><b>行事曆檔案（.ics）</b><small>不用設定，但每次要再按一次「加入」</small></span></label>
-        <label class="radio"><input type="radio" name="mode" value="outlook" ${s.calendar.mode === 'outlook' ? 'checked' : ''}>
-          <span><b>公司 Outlook 行事曆</b><small>用上方 Microsoft 帳號寫入；iPhone 已加入公司帳號就會同步顯示</small></span></label>
-        <label>捷徑名稱<input id="shortcutName" value="${esc(s.calendar.shortcutName)}"></label>
-        <label>只寫開始時間時的預設長度
-          <select id="duration">${[30, 60, 90, 120].map((m) => `<option value="${m}" ${Number(s.calendar.defaultDuration) === m ? 'selected' : ''}>${m} 分鐘</option>`).join('')}</select>
-        </label>
-      </div>
+      <h2 class="group-header">OneNote 統一筆記</h2>
+      <ul class="group icons">
+        <li class="cell">
+          <span class="cell-icon" style="--c: #7719AA">${icon('book')}</span>
+          <span class="cell-label">分區</span>
+          <label class="value-pill ${s.onenote.sectionId ? '' : 'empty-val'}" style="max-width:55%">
+            <span id="sectionName" style="overflow:hidden;text-overflow:ellipsis">${esc(s.onenote.sectionName || '未選擇')}</span>${icon('chevronUpDown')}
+            <select id="section" ${signedIn ? '' : 'disabled'}>
+              ${s.onenote.sectionId ? `<option value="${esc(s.onenote.sectionId)}">${esc(s.onenote.sectionName)}</option>` : '<option value="">未選擇</option>'}
+            </select>
+          </label>
+        </li>
+        <li><button class="cell action tap" id="loadSections" ${signedIn ? '' : 'disabled'}>${signedIn ? '載入我的筆記本分區' : '登入後即可選擇分區'}</button></li>
+      </ul>
 
-      <h2 class="section">資料</h2>
-      <div class="card form">
-        <p class="status-line">待辦 ${db().todos.length}・筆記 ${db().notes.length}・行程 ${db().events.length}・未同步 ${pendingCount()}</p>
-        <button id="retry">重試所有未同步項目</button>
-        <button id="export">匯出備份（JSON）</button>
-        <label class="file-btn">匯入備份<input type="file" id="import" accept="application/json"></label>
-      </div>
-      ${hint('資料都存在這支手機上。iOS 若長時間沒開 App 可能清除網頁資料，建議偶爾匯出備份。')}
+      <h2 class="group-header">行程 → 行事曆</h2>
+      <ul class="group icons" id="calModes">
+        ${calModes
+          .map(
+            ([id, name, desc]) => `<li><button class="cell tap" data-mode="${id}">
+              <span class="cell-icon" style="${featureVars('event')}">${icon(id === 'shortcut' ? 'bolt' : id === 'ics' ? 'calendar' : 'building')}</span>
+              <span class="cell-label">${name}<small>${desc}</small></span>
+              ${s.calendar.mode === id ? icon('check', 'checkmark') : ''}
+            </button></li>`
+          )
+          .join('')}
+      </ul>
+      <ul class="group icons" style="margin-top:16px">
+        <li class="cell">
+          <span class="cell-icon" style="--c: var(--gray)">${icon('bolt')}</span>
+          <span class="cell-label">捷徑名稱</span>
+          <input id="shortcutName" class="right" style="flex:0 1 50%" value="${esc(s.calendar.shortcutName)}">
+        </li>
+        <li class="cell">
+          <span class="cell-icon" style="--c: var(--gray)">${icon('timer')}</span>
+          <span class="cell-label">預設長度</span>
+          <label class="value-pill"><span id="durText">${s.calendar.defaultDuration} 分鐘</span>${icon('chevronUpDown')}
+            <select id="duration">${[30, 60, 90, 120].map((m) => `<option value="${m}" ${Number(s.calendar.defaultDuration) === m ? 'selected' : ''}>${m} 分鐘</option>`).join('')}</select>
+          </label>
+        </li>
+      </ul>
+      <p class="group-footer">只寫開始時間時，行程會用預設長度。</p>
+
+      <h2 class="group-header">資料</h2>
+      <ul class="group icons">
+        <li class="cell">
+          <span class="cell-icon" style="--c: var(--gray)">${icon('tray')}</span>
+          <span class="cell-label">本機資料</span>
+          <span class="cell-value">待辦 ${db().todos.length}・筆記 ${db().notes.length}・行程 ${db().events.length}</span>
+        </li>
+        <li><button class="cell tap" id="retry">
+          <span class="cell-icon" style="--c: var(--warning)">${icon('retry')}</span>
+          <span class="cell-label">重試未同步項目</span><span class="cell-value">${pendingCount()}</span>
+        </button></li>
+        <li><button class="cell tap" id="export">
+          <span class="cell-icon">${icon('download')}</span><span class="cell-label">匯出備份</span>${icon('chevronRight', 'chev')}
+        </button></li>
+        <li><label class="cell tap">
+          <span class="cell-icon">${icon('upload')}</span><span class="cell-label">匯入備份</span>${icon('chevronRight', 'chev')}
+          <input type="file" id="import" accept="application/json" hidden>
+        </label></li>
+      </ul>
+      <p class="group-footer">資料都存在這支手機上。iOS 若長時間沒開 App 可能清除網頁資料，建議偶爾匯出備份。</p>
     </main>`;
 
   const $ = (id) => document.getElementById(id);
@@ -812,14 +1174,14 @@ function viewSettings() {
     $(id).addEventListener('change', (e) => {
       obj[key] = e.target.value.trim();
       save();
-      after?.();
+      after?.(e);
     });
   bindField('webhookUrl', s.todo, 'webhookUrl');
   bindField('token', s.todo, 'token');
   bindField('clientId', s.microsoft, 'clientId');
   bindField('tenant', s.microsoft, 'tenant');
   bindField('shortcutName', s.calendar, 'shortcutName');
-  bindField('duration', s.calendar, 'defaultDuration');
+  bindField('duration', s.calendar, 'defaultDuration', () => ($('durText').textContent = `${s.calendar.defaultDuration} 分鐘`));
 
   $('ping').addEventListener('click', async () => {
     if (!s.todo.webhookUrl) return toast('請先填入 Webhook 網址', 'error');
@@ -834,7 +1196,7 @@ function viewSettings() {
   $('copy').addEventListener('click', async () => {
     try {
       await navigator.clipboard.writeText(ms.redirectUri());
-      toast('已複製');
+      toast('已複製重新導向 URI');
     } catch {
       toast('無法複製，請手動選取', 'error');
     }
@@ -847,48 +1209,57 @@ function viewSettings() {
       toast(e.message, 'error');
     }
   });
-  $('logout')?.addEventListener('click', () => {
-    ms.signOut();
-    viewSettings();
-  });
+  $('logout')?.addEventListener('click', () =>
+    sheet([{ label: '登出 Microsoft 帳號', danger: true, run: () => (ms.signOut(), viewSettings()) }])
+  );
 
   $('loadSections').addEventListener('click', async (e) => {
-    e.target.disabled = true;
-    e.target.textContent = '載入中…';
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    btn.textContent = '載入中…';
     try {
       const sections = await ms.listSections(s);
       $('section').innerHTML =
-        '<option value="">（請選擇）</option>' +
+        '<option value="">未選擇</option>' +
         sections.map((x) => `<option value="${esc(x.id)}" ${x.id === s.onenote.sectionId ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
-      toast(sections.length ? `找到 ${sections.length} 個分區` : '沒有找到分區，請先在 OneNote 建立', sections.length ? 'info' : 'error');
+      if (sections.length) {
+        toast(`找到 ${sections.length} 個分區，請點「分區」選擇`);
+        $('section').focus();
+      } else toast('沒有找到分區，請先在 OneNote 建立', 'error');
     } catch (err) {
       toast(err.message, 'error');
     }
-    e.target.disabled = false;
-    e.target.textContent = '載入我的筆記本分區';
+    btn.disabled = false;
+    btn.textContent = '重新載入分區';
   });
   $('section').addEventListener('change', (e) => {
     s.onenote.sectionId = e.target.value;
     s.onenote.sectionName = e.target.value ? e.target.selectedOptions[0].textContent : '';
     save();
+    $('sectionName').textContent = s.onenote.sectionName || '未選擇';
+    e.target.closest('.value-pill').classList.toggle('empty-val', !e.target.value);
     toast(e.target.value ? '已設定 OneNote 分區' : '已取消 OneNote 分區');
   });
 
-  document.querySelectorAll('input[name=mode]').forEach((r) =>
-    r.addEventListener('change', (e) => {
-      const before = s.calendar.mode;
-      s.calendar.mode = e.target.value;
-      save();
-      if (e.target.value === 'outlook' && before !== 'outlook' && ms.isSignedIn())
-        toast('需要行事曆權限：請登出後重新登入一次', 'error');
-      viewSettings();
-    })
-  );
+  $('calModes').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-mode]');
+    if (!b || b.dataset.mode === s.calendar.mode) return;
+    const before = s.calendar.mode;
+    s.calendar.mode = b.dataset.mode;
+    save();
+    if (s.calendar.mode === 'outlook' && before !== 'outlook' && ms.isSignedIn())
+      toast('需要行事曆權限：請登出後重新登入一次', 'error');
+    const y = window.scrollY;
+    viewSettings();
+    window.scrollTo(0, y);
+  });
 
   $('retry').addEventListener('click', async () => {
     await retryPending();
-    toast(pendingCount() ? '仍有項目同步失敗' : '全部同步完成');
+    toast(pendingCount() ? '仍有項目同步失敗' : '全部同步完成', pendingCount() ? 'error' : 'ok');
+    const y = window.scrollY;
     viewSettings();
+    window.scrollTo(0, y);
   });
 
   $('export').addEventListener('click', () => {
@@ -910,6 +1281,7 @@ function viewSettings() {
       if (!Array.isArray(data.todos) || !Array.isArray(data.notes)) throw new Error();
       data.settings = { ...data.settings, todo: { ...data.settings?.todo, token: s.todo.token } };
       replaceAll(data);
+      applyTheme(settings().appearance);
       toast('已匯入');
       viewSettings();
     } catch {
@@ -928,17 +1300,20 @@ const routes = [
   [/^#\/notes\/list$/, viewNoteList],
   [/^#\/notes\/edit\/(.+)$/, (id) => viewNoteEditor(decodeURIComponent(id))],
   [/^#\/events$/, viewEvents],
+  [/^#\/appearance$/, viewAppearance],
   [/^#\/settings$/, viewSettings],
 ];
 
 function render() {
   refreshCurrent = null;
+  document.querySelectorAll('.sheet-wrap').forEach((el) => el.remove());
   const hash = location.hash || '#/';
   for (const [re, view] of routes) {
     const m = hash.match(re);
     if (m) {
-      view(...m.slice(1));
       window.scrollTo(0, 0);
+      view(...m.slice(1));
+      updateNav();
       return;
     }
   }
@@ -946,12 +1321,17 @@ function render() {
 }
 
 async function start() {
+  applyTheme(settings().appearance);
+  matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
+    if (location.hash === '#/appearance') viewAppearance();
+  });
   try {
     if (await ms.handleRedirect(settings())) toast('Microsoft 登入成功');
   } catch (e) {
     toast(`登入失敗：${e.message}`, 'error');
   }
   window.addEventListener('hashchange', render);
+  window.addEventListener('scroll', updateNav, { passive: true });
   render();
   retryPending();
   window.addEventListener('online', retryPending);

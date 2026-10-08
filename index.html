@@ -16,6 +16,16 @@
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
   <link rel="icon" type="image/png" href="icons/icon-192.png">
   <link rel="stylesheet" href="css/style.css">
+  <script>
+    // 在畫面出現前先套用上次的配色，避免閃一下預設色
+    try {
+      var t = JSON.parse(localStorage.getItem('tte.theme'));
+      if (t) {
+        document.documentElement.dataset.mode = t.mode;
+        for (var k in t.vars) document.documentElement.style.setProperty(k, t.vars[k]);
+      }
+    } catch (e) {}
+  </script>
 </head>
 <body>
   <div id="app"></div>
