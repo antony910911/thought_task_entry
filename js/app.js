@@ -2,7 +2,8 @@ import { db, save, uid, replaceAll } from './store.js';
 import { parseEvent, formatRange, formatDate, formatTime } from './parser.js';
 import { icon } from './icons.js';
 import { THEMES, MODES, themeById, applyTheme, effectiveMode } from './themes.js';
-import { mountMascot, queueCheer } from './mascot.js';
+import { mountMascot, queueCheer, drawAlienPreview } from './mascot.js';
+import { ALIENS, character } from './aliens.js';
 import * as todoSync from './sync/todo.js';
 import * as ms from './sync/microsoft.js';
 import * as cal from './sync/calendar.js';
@@ -123,6 +124,81 @@ function sheet(actions, title = '') {
   });
   document.body.appendChild(wrap);
   requestAnimationFrame(() => wrap.classList.add('open'));
+}
+
+/** iOS 風格的輸入對話框，回傳輸入的文字；按取消回傳 null */
+function inputDialog({ title, message = '', value = '', placeholder = '', confirm = '完成' }) {
+  return new Promise((resolve) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'alert-wrap';
+    wrap.innerHTML = `<form class="alert" role="dialog" aria-label="${esc(title)}">
+        <h3>${esc(title)}</h3>
+        ${message ? `<p>${esc(message)}</p>` : ''}
+        <input id="dialogInput" value="${esc(value)}" placeholder="${esc(placeholder)}" autocomplete="off" autocapitalize="off" enterkeyhint="done">
+        <div class="alert-actions">
+          <button type="button" data-cancel>取消</button>
+          <button type="submit" class="strong">${esc(confirm)}</button>
+        </div>
+      </form>`;
+    const input = wrap.querySelector('input');
+    const close = (result) => {
+      wrap.classList.remove('open');
+      setTimeout(() => wrap.remove(), 200);
+      resolve(result);
+    };
+    wrap.querySelector('form').addEventListener('submit', (e) => {
+      e.preventDefault();
+      close(input.value);
+    });
+    wrap.querySelector('[data-cancel]').addEventListener('click', () => close(null));
+    wrap.addEventListener('click', (e) => e.target === wrap && close(null));
+    document.body.appendChild(wrap);
+    input.focus();
+    input.select();
+    requestAnimationFrame(() => wrap.classList.add('open'));
+  });
+}
+
+/** 選外星人的底部選單 */
+function alienPicker(current) {
+  return new Promise((resolve) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'sheet-wrap';
+    wrap.innerHTML = `<div class="sheet">
+        <div class="sheet-group picker">
+          <div class="sheet-title">選一隻外星人</div>
+          <div class="alien-grid">${alienCards(current)}</div>
+        </div>
+        <div class="sheet-group cancel"><button data-cancel>取消</button></div>
+      </div>`;
+    const close = (id) => {
+      wrap.classList.remove('open');
+      setTimeout(() => wrap.remove(), 300);
+      resolve(id);
+    };
+    wrap.addEventListener('click', (e) => {
+      const card = e.target.closest('[data-alien]');
+      if (card) close(card.dataset.alien);
+      else if (e.target.closest('[data-cancel]') || e.target === wrap) close(null);
+    });
+    document.body.appendChild(wrap);
+    paintAlienCards(wrap);
+    requestAnimationFrame(() => wrap.classList.add('open'));
+  });
+}
+
+function alienCards(current) {
+  return ALIENS.map(
+    (a) => `<button class="alien-card ${a.id === current ? 'on' : ''}" data-alien="${a.id}">
+      <canvas data-preview="${a.id}" width="16" height="16"></canvas>
+      <b>${esc(a.name)}</b><small>${esc(a.desc)}</small>
+      <span class="tick">${icon('check')}</span>
+    </button>`
+  ).join('');
+}
+
+function paintAlienCards(root) {
+  root.querySelectorAll('canvas[data-preview]').forEach((c) => drawAlienPreview(c, c.dataset.preview));
 }
 
 function autosize(el, min = 0) {
@@ -268,7 +344,10 @@ function viewHome() {
 
       <section class="stage-card" aria-label="Blip">
         <div class="stage" id="stage"></div>
-        <div class="stage-cap"><b>Blip</b><span id="blipStatus"></span><span class="pokes" id="blipPokes"></span></div>
+        <div class="stage-cap">
+          <button class="alien-switch" id="alienSwitch" aria-label="換外星人"><b>${esc(character(settings().appearance.alien).name)}</b>${icon('chevronUpDown')}</button>
+          <span id="blipStatus"></span><span class="pokes" id="blipPokes"></span>
+        </div>
       </section>
 
       <div class="tiles">
@@ -326,7 +405,12 @@ function viewHome() {
   const focusEl = document.getElementById('focus');
   if (focusEl) bindTodoList(focusEl, viewHome);
 
-  mountMascot(document.getElementById('stage'), {
+  const mascot = mountMascot(document.getElementById('stage'), {
+    alien: settings().appearance.alien,
+    onSwap: (id) => {
+      const name = document.querySelector('#alienSwitch b');
+      if (name) name.textContent = character(id).name;
+    },
     status: document.getElementById('blipStatus'),
     counter: document.getElementById('blipPokes'),
     lines: () => {
@@ -345,6 +429,16 @@ function viewHome() {
       if (db().notes.length) list.push(`已經寫了 ${db().notes.length} 篇筆記囉`);
       return list;
     },
+  });
+  try {
+    if (localStorage.getItem('beamup.debug')) window.beamupMascot = mascot; // 除錯：在主控台呼叫 beamupMascot.play('ride')
+  } catch {}
+  document.getElementById('alienSwitch').addEventListener('click', async () => {
+    const id = await alienPicker(settings().appearance.alien);
+    if (!id || id === settings().appearance.alien) return;
+    settings().appearance.alien = id;
+    save();
+    mascot.swap(id);
   });
 }
 
@@ -520,10 +614,41 @@ function viewTodoList() {
 
 // ---------- 筆記 ----------
 
-function allNoteTags() {
+/** 標籤名稱：去掉開頭的 #、空白與分隔符號 */
+function cleanTag(name) {
+  return String(name ?? '').replace(/^[#＃]+/, '').replace(/[\s,，、#＃]+/g, '').trim();
+}
+
+function parseTags(text) {
+  return [...new Set(String(text).split(/[,，、\n]+/).map(cleanTag).filter(Boolean))];
+}
+
+function tagCounts() {
   const counts = new Map();
   db().notes.forEach((n) => (n.tags || []).forEach((t) => counts.set(t, (counts.get(t) || 0) + 1)));
-  return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
+  (db().tagLibrary || []).forEach((t) => !counts.has(t) && counts.set(t, 0));
+  return counts;
+}
+
+/** 所有標籤：用過的依次數排序，接著是自己建好但還沒用的 */
+function allNoteTags() {
+  return [...tagCounts().entries()].sort((a, b) => b[1] - a[1]).map(([t]) => t);
+}
+
+function renameTag(from, to) {
+  to = cleanTag(to);
+  if (!to || to === from) return false;
+  for (const n of db().notes)
+    if (n.tags.includes(from)) n.tags = [...new Set(n.tags.map((t) => (t === from ? to : t)))];
+  db().tagLibrary = [...new Set((db().tagLibrary || []).map((t) => (t === from ? to : t)))];
+  save();
+  return true;
+}
+
+function deleteTag(tag) {
+  for (const n of db().notes) n.tags = n.tags.filter((t) => t !== tag);
+  db().tagLibrary = (db().tagLibrary || []).filter((t) => t !== tag);
+  save();
 }
 
 function viewNoteEditor(id) {
@@ -554,7 +679,10 @@ function viewNoteEditor(id) {
       <p class="note-date">${longDate(created)}</p>
       <div id="status"></div>
       <input id="title" class="note-title" placeholder="標題" value="${esc(note.title)}" autocomplete="off">
-      <div class="tagrow" id="tagrow"></div>
+      <div class="tagrow" id="tagrow">
+        <span class="chips" id="chips"></span>
+        <label class="tag-entry">${icon('tag')}<input id="tagInput" placeholder="加標籤" autocomplete="off" autocapitalize="off" enterkeyhint="done"></label>
+      </div>
       <div class="suggest" id="suggest"></div>
       <textarea id="content" class="note-body" placeholder="開始書寫…">${esc(note.content)}</textarea>
     </main>
@@ -590,55 +718,82 @@ function viewNoteEditor(id) {
     localStorage.setItem(DRAFT_KEY, JSON.stringify({ title: titleEl.value, content: contentEl.value, tags }));
   };
 
+  const tagInput = $('tagInput');
+  let composing = false; // 注音／拼音還在選字時，Enter 和空白鍵是用來選字的，不能當成「新增標籤」
+
   const renderTags = () => {
-    $('tagrow').innerHTML =
-      tags.map((t, i) => `<button class="chip" data-i="${i}">#${esc(t)}${icon('xmark')}</button>`).join('') +
-      `<label class="tag-entry">${icon('tag')}<input id="tagInput" placeholder="加標籤" autocomplete="off" enterkeyhint="done"></label>`;
-    const sugg = allNoteTags().filter((t) => !tags.includes(t)).slice(0, 12);
-    $('suggest').innerHTML = sugg.map((t) => `<button class="chip ghost" data-t="${esc(t)}">#${esc(t)}</button>`).join('');
-    bindTagInput();
+    $('chips').innerHTML = tags
+      .map(
+        (t, i) => `<span class="chip editable">
+          <button class="chip-label" data-edit="${i}" aria-label="重新命名 ${esc(t)}">#${esc(t)}</button>
+          <button class="chip-x" data-remove="${i}" aria-label="移除 ${esc(t)}">${icon('xmark')}</button>
+        </span>`
+      )
+      .join('');
+    tagInput.placeholder = tags.length ? '加標籤' : '加標籤（Enter 或逗號分隔）';
+    const sugg = allNoteTags().filter((t) => !tags.includes(t)).slice(0, 15);
+    $('suggest').innerHTML =
+      sugg.map((t) => `<button class="chip ghost" data-add="${esc(t)}">#${esc(t)}</button>`).join('') +
+      `<a class="chip ghost manage" href="#/tags">${icon('gear')}管理標籤</a>`;
   };
 
-  const addTags = (text, refocus = true) => {
-    const before = tags.length;
-    splitTags(text).forEach((t) => !tags.includes(t) && tags.push(t));
-    if (tags.length === before) {
-      $('tagInput').value = '';
-      return;
+  const addTags = (text) => {
+    const added = parseTags(text).filter((t) => !tags.includes(t));
+    tagInput.value = '';
+    if (!added.length) return;
+    tags.push(...added);
+    renderTags();
+    saveDraft();
+  };
+
+  tagInput.addEventListener('compositionstart', () => (composing = true));
+  tagInput.addEventListener('compositionend', () => (composing = false));
+  tagInput.addEventListener('keydown', (e) => {
+    if (composing || e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault();
+      addTags(tagInput.value);
+    } else if (e.key === 'Backspace' && !tagInput.value && tags.length) {
+      tags.pop();
+      renderTags();
+      saveDraft();
     }
-    renderTags();
-    saveDraft();
-    if (refocus) $('tagInput').focus();
-  };
+  });
+  tagInput.addEventListener('input', () => {
+    if (!composing && /[,，、]$/.test(tagInput.value)) addTags(tagInput.value);
+  });
+  tagInput.addEventListener('blur', () => tagInput.value.trim() && addTags(tagInput.value));
 
-  function bindTagInput() {
-    const input = $('tagInput');
-    input.addEventListener('keydown', (e) => {
-      if (e.isComposing) return; // 注音/拼音選字中
-      if (e.key === 'Enter' || e.key === ',' || e.key === ' ') {
-        e.preventDefault();
-        addTags(input.value);
-      } else if (e.key === 'Backspace' && !input.value && tags.length) {
-        tags.pop();
-        renderTags();
-        saveDraft();
-        $('tagInput').focus();
-      }
+  // 點標籤時不要讓輸入框失焦（不然畫面重排，點擊會落空）
+  for (const id of ['chips', 'suggest'])
+    $(id).addEventListener('pointerdown', (e) => {
+      if (e.target.closest('button')) e.preventDefault();
     });
-    input.addEventListener('input', () => /[\s,，、]$/.test(input.value) && addTags(input.value));
-    input.addEventListener('blur', () => input.value.trim() && addTags(input.value, false));
-  }
 
-  $('tagrow').addEventListener('click', (e) => {
-    const b = e.target.closest('.chip');
-    if (!b) return;
-    tags.splice(Number(b.dataset.i), 1);
-    renderTags();
-    saveDraft();
+  $('chips').addEventListener('click', async (e) => {
+    const remove = e.target.closest('[data-remove]');
+    const edit = e.target.closest('[data-edit]');
+    if (remove) {
+      tags.splice(Number(remove.dataset.remove), 1);
+      renderTags();
+      saveDraft();
+    } else if (edit) {
+      const i = Number(edit.dataset.edit);
+      const name = await inputDialog({ title: '標籤名稱', message: '只改這篇筆記的標籤', value: tags[i], confirm: '儲存' });
+      if (name == null) return;
+      const clean = cleanTag(name);
+      if (!clean) {
+        tags.splice(i, 1);
+      } else if (tags.includes(clean) && tags[i] !== clean) {
+        tags.splice(i, 1); // 改成已經有的標籤 → 合併
+      } else tags[i] = clean;
+      renderTags();
+      saveDraft();
+    }
   });
   $('suggest').addEventListener('click', (e) => {
-    const b = e.target.closest('.chip');
-    if (b) addTags(b.dataset.t, false);
+    const b = e.target.closest('[data-add]');
+    if (b) addTags(b.dataset.add);
   });
   titleEl.addEventListener('input', saveDraft);
   titleEl.addEventListener('keydown', (e) => {
@@ -653,8 +808,7 @@ function viewNoteEditor(id) {
   });
 
   const persist = () => {
-    const pendingTag = $('tagInput').value;
-    if (pendingTag.trim()) addTags(pendingTag, false);
+    if (tagInput.value.trim()) addTags(tagInput.value);
     const title = titleEl.value.trim();
     const content = contentEl.value.trim();
     if (!title && !content) {
@@ -759,9 +913,83 @@ function noteGroups(notes) {
   return [...groups.entries()];
 }
 
+function viewTags() {
+  $app.innerHTML = `
+    ${nav({ back: '#/notes/list', backLabel: '筆記', title: '標籤', actions: `<button class="icon-btn" id="addTag" aria-label="新增標籤">${icon('plus')}</button>` })}
+    <main class="page" style="${featureVars('note')}">
+      <h1 class="large-title">標籤</h1>
+      <ul class="group icons" id="tagList"></ul>
+      <p class="group-footer">點標籤可以改名或刪除。改成已經存在的名稱，兩個標籤會合併。改名不會更新已經送到 OneNote 的頁面。</p>
+    </main>`;
+  const list = document.getElementById('tagList');
+  const render = () => {
+    const counts = tagCounts();
+    const items = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'zh-Hant'));
+    list.innerHTML = items.length
+      ? items
+          .map(
+            ([t, n]) => `<li><button class="cell tap" data-tag="${esc(t)}">
+              <span class="cell-icon" style="${featureVars('note')}">${icon('tag')}</span>
+              <span class="cell-label">${esc(t)}</span>
+              <span class="cell-value">${n ? `${n} 篇` : '還沒用過'}</span>${icon('chevronRight', 'chev')}
+            </button></li>`
+          )
+          .join('')
+      : `<li class="empty">${icon('tag')}還沒有標籤<br>按右上角＋建立常用標籤</li>`;
+  };
+  render();
+
+  document.getElementById('addTag').addEventListener('click', async () => {
+    const name = await inputDialog({ title: '新增標籤', message: '建立後，寫筆記時可以直接點選', placeholder: '例如：會議', confirm: '新增' });
+    const clean = cleanTag(name);
+    if (!clean) return;
+    if (tagCounts().has(clean)) return toast(`「${clean}」已經有了`, 'error');
+    db().tagLibrary = [...(db().tagLibrary || []), clean];
+    save();
+    render();
+    toast(`已新增 #${clean}`);
+  });
+
+  list.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-tag]');
+    if (!b) return;
+    const tag = b.dataset.tag;
+    const n = tagCounts().get(tag) || 0;
+    sheet(
+      [
+        {
+          label: '重新命名',
+          run: async () => {
+            const name = await inputDialog({ title: '重新命名標籤', message: n ? `會一起更新 ${n} 篇筆記` : '', value: tag, confirm: '儲存' });
+            if (name == null) return;
+            const clean = cleanTag(name);
+            if (!clean) return toast('標籤名稱不能是空的', 'error');
+            const merged = tagCounts().has(clean) && clean !== tag;
+            if (renameTag(tag, clean)) {
+              toast(merged ? `已合併到 #${clean}` : `已改名為 #${clean}`);
+              render();
+            }
+          },
+        },
+        ...(n ? [{ label: `查看 ${n} 篇筆記`, run: () => ((ui.noteTag = tag), (location.hash = '#/notes/list')) }] : []),
+        {
+          label: n ? `刪除（從 ${n} 篇筆記移除）` : '刪除',
+          danger: true,
+          run: () => {
+            deleteTag(tag);
+            render();
+            toast(`已刪除 #${tag}`);
+          },
+        },
+      ],
+      `#${tag}`
+    );
+  });
+}
+
 function viewNoteList() {
   $app.innerHTML = `
-    ${nav({ back: '#/', backLabel: 'Beamup', title: '筆記' })}
+    ${nav({ back: '#/', backLabel: 'Beamup', title: '筆記', actions: `<a class="pill-btn" href="#/tags">${icon('tag')}標籤</a>` })}
     <main class="page has-toolbar" style="${featureVars('note')}">
       <h1 class="large-title">筆記</h1>
       <label class="search">${icon('search')}<input type="search" id="q" placeholder="搜尋" value="${esc(ui.noteQuery)}"></label>
@@ -1038,6 +1266,10 @@ function viewAppearance() {
       </div>
       <p class="group-footer">「自動」會跟著 iPhone 的淺色／深色模式切換。</p>
 
+      <h2 class="group-header">外星人</h2>
+      <div class="alien-grid" id="aliens">${alienCards(ap.alien)}</div>
+      <p class="group-footer">也可以在首頁點外星人的名字直接換。</p>
+
       <h2 class="group-header">配色</h2>
       <div class="swatches" id="swatches">
         ${THEMES.map((t) => {
@@ -1059,6 +1291,15 @@ function viewAppearance() {
     save();
     applyTheme(ap);
     viewAppearance();
+  });
+  paintAlienCards($app);
+  document.getElementById('aliens').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-alien]');
+    if (!b) return;
+    ap.alien = b.dataset.alien;
+    save();
+    document.querySelectorAll('#aliens .alien-card').forEach((x) => x.classList.toggle('on', x === b));
+    toast(`${character(ap.alien).name} 已經在首頁等你了`);
   });
   document.getElementById('swatches').addEventListener('click', (e) => {
     const b = e.target.closest('.swatch');
@@ -1330,6 +1571,7 @@ const routes = [
   [/^#\/notes\/edit\/(.+)$/, (id) => viewNoteEditor(decodeURIComponent(id))],
   [/^#\/events$/, viewEvents],
   [/^#\/appearance$/, viewAppearance],
+  [/^#\/tags$/, viewTags],
   [/^#\/settings$/, viewSettings],
 ];
 

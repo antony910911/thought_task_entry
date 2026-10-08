@@ -6,12 +6,13 @@ const DEFAULTS = {
   todos: [],
   notes: [],
   events: [],
+  tagLibrary: [],
   settings: {
     todo: { webhookUrl: '', token: '' },
     microsoft: { clientId: '', tenant: 'organizations' },
     onenote: { sectionId: '', sectionName: '' },
     calendar: { mode: 'shortcut', shortcutName: '加入行程', defaultDuration: 60 },
-    appearance: { theme: 'classic', mode: 'auto' },
+    appearance: { theme: 'classic', mode: 'auto', alien: 'blip' },
   },
 };
 
