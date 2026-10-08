@@ -1,7 +1,7 @@
 // 離線快取：App 本身的檔案先從快取讀，背景再更新。外部 API（Microsoft、Webhook）一律不快取。
 // 新版檔案會在背景下載、下次開啟生效；新增或改名檔案時請更新 FILES 並把 VERSION 加一。
-const VERSION = 'v2';
-const CACHE = `tte-${VERSION}`;
+const VERSION = 'v3';
+const CACHE = `beamup-${VERSION}`;
 const FILES = [
   './',
   './index.html',
@@ -12,6 +12,7 @@ const FILES = [
   './js/parser.js',
   './js/icons.js',
   './js/themes.js',
+  './js/mascot.js',
   './js/sync/todo.js',
   './js/sync/microsoft.js',
   './js/sync/calendar.js',

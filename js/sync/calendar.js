@@ -46,11 +46,11 @@ export function buildIcs(ev, uid) {
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    'PRODID:-//thought-task-entry//ZH-TW',
+    'PRODID:-//Beamup//ZH-TW',
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
     'BEGIN:VEVENT',
-    `UID:${uid}@thought-task-entry`,
+    `UID:${uid}@beamup`,
     `DTSTAMP:${utcStamp(new Date())}`,
     ev.allDay ? `DTSTART;VALUE=DATE:${dateStamp(ev.start)}` : `DTSTART:${utcStamp(ev.start)}`,
     ev.allDay ? `DTEND;VALUE=DATE:${dateStamp(ev.end)}` : `DTEND:${utcStamp(ev.end)}`,

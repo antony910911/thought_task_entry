@@ -1,5 +1,5 @@
 /* =========================================================
-   隨手記：iOS 風格樣式
+   Beamup：iOS 風格樣式
    顏色由 js/themes.js 以 CSS 變數注入（--accent-l / --accent-d …），
    這裡只決定淺色／深色時各自取哪一組。
    ========================================================= */
@@ -443,6 +443,69 @@ input, textarea, select { outline: none; }
 .notice .i { color: var(--warning); font-size: 20px; }
 .notice span { flex: 1; }
 .notice b { color: var(--accent); font-weight: 600; }
+
+/* ---------- Blip 舞台 ---------- */
+.brand {
+  font-family: 'Pixelify Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-weight: 700;
+  font-size: 36px;
+  letter-spacing: 0.01em;
+}
+.stage-card {
+  margin-bottom: 14px;
+  border-radius: var(--r-lg);
+  background: var(--card);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.stage {
+  position: relative;
+  height: 170px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 16%, var(--card)) 0%, color-mix(in srgb, var(--accent) 5%, var(--card)) 100%);
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.blip-canvas {
+  display: block;
+  width: 100%;
+  height: 170px;
+  image-rendering: pixelated;
+  touch-action: manipulation;
+  cursor: pointer;
+}
+.blip-bubble {
+  position: absolute;
+  top: 0;
+  left: 0;
+  max-width: 70%;
+  padding: 6px 10px;
+  border: 2px solid var(--label);
+  border-radius: 4px;
+  background: var(--card);
+  color: var(--label);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--label) 18%, transparent);
+  animation: bubble-in 0.25s steps(3) both;
+}
+@keyframes bubble-in { from { transform: scale(0.6); opacity: 0; } }
+.stage-cap {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 14px 11px;
+  font-size: 13px;
+  color: var(--label-2);
+  border-top: 0.5px solid var(--sep);
+}
+.stage-cap b { font-family: 'Pixelify Sans', -apple-system, sans-serif; font-weight: 700; font-size: 15px; color: var(--label); }
+.stage-cap .pokes { margin-left: auto; font-variant-numeric: tabular-nums; }
 
 /* ---------- 待辦 ---------- */
 .composer {

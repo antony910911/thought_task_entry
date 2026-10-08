@@ -2,6 +2,7 @@ import { db, save, uid, replaceAll } from './store.js';
 import { parseEvent, formatRange, formatDate, formatTime } from './parser.js';
 import { icon } from './icons.js';
 import { THEMES, MODES, themeById, applyTheme, effectiveMode } from './themes.js';
+import { mountMascot, queueCheer } from './mascot.js';
 import * as todoSync from './sync/todo.js';
 import * as ms from './sync/microsoft.js';
 import * as cal from './sync/calendar.js';
@@ -215,6 +216,7 @@ function bindTodoList(root, rerender) {
       todo.doneAt = todo.done ? new Date().toISOString() : null;
       save();
       li.classList.toggle('done', todo.done); // 先播勾選動畫，再重排
+      if (todo.done) queueCheer(['完成一件！太強了', '又少一件～', '好耶！清掉了', '做得好！'][Math.floor(Math.random() * 4)]);
       setTimeout(rerender, 450);
       return;
     }
@@ -253,18 +255,21 @@ function viewHome() {
     .sort((a, b) => new Date(a.start) - new Date(b.start))
     .slice(0, 3);
   const pending = pendingCount();
-  const hour = now.getHours();
-  const greet = hour < 5 ? '夜深了' : hour < 11 ? '早安' : hour < 14 ? '午安' : hour < 18 ? '下午好' : '晚安';
 
   $app.innerHTML = `
     ${nav({
-      title: '隨手記',
+      title: 'Beamup',
       actions: `<a class="icon-btn" href="#/appearance" aria-label="外觀">${icon('palette')}</a>
                 <a class="icon-btn" href="#/settings" aria-label="設定">${icon('gear')}</a>`,
     })}
     <main class="page">
       <p class="eyebrow">${now.getMonth() + 1}月${now.getDate()}日 星期${WEEK[now.getDay()]}</p>
-      <h1 class="large-title">${greet}</h1>
+      <h1 class="large-title brand">Beamup</h1>
+
+      <section class="stage-card" aria-label="Blip">
+        <div class="stage" id="stage"></div>
+        <div class="stage-cap"><b>Blip</b><span id="blipStatus"></span><span class="pokes" id="blipPokes"></span></div>
+      </section>
 
       <div class="tiles">
         <a class="tile" href="#/todo" style="${featureVars('todo')}">
@@ -320,6 +325,27 @@ function viewHome() {
   });
   const focusEl = document.getElementById('focus');
   if (focusEl) bindTodoList(focusEl, viewHome);
+
+  mountMascot(document.getElementById('stage'), {
+    status: document.getElementById('blipStatus'),
+    counter: document.getElementById('blipPokes'),
+    lines: () => {
+      const list = [];
+      const openNow = db().todos.filter((t) => !t.done);
+      const overdue = openNow.filter((t) => t.due && dueInfo(t.due).diff < 0).length;
+      if (overdue) list.push(`有 ${overdue} 件待辦逾期了！`);
+      list.push(openNow.length ? `還有 ${openNow.length} 件待辦，加油！` : '待辦都清空了，好厲害！');
+      const nextEv = db()
+        .events.filter((e) => new Date(e.end) >= new Date())
+        .sort((a, b) => new Date(a.start) - new Date(b.start))[0];
+      if (nextEv) {
+        const d = dayDiff(new Date(nextEv.start));
+        list.push(`${d === 0 ? '今天' : d === 1 ? '明天' : '之後'}有「${nextEv.title}」`);
+      }
+      if (db().notes.length) list.push(`已經寫了 ${db().notes.length} 篇筆記囉`);
+      return list;
+    },
+  });
 }
 
 // ---------- 待辦事項 ----------
@@ -332,7 +358,7 @@ function viewTodo() {
   $app.innerHTML = `
     ${nav({
       back: '#/',
-      backLabel: '隨手記',
+      backLabel: 'Beamup',
       title: '待辦事項',
       actions: `<a class="pill-btn" href="#/todo/list">${icon('list')}清單<span class="count" id="count">${openCount()}</span></a>`,
     })}
@@ -434,6 +460,7 @@ function viewTodo() {
       const failed = results.filter((s) => s && s.status === 'error');
       if (failed.length) toast(`同步失敗：${failed[0].error}`, 'error');
       else if (configured) toast(`已加入並同步 ${created.length} 件`);
+      queueCheer(failed.length ? '有待辦沒傳出去，等等再試' : `收到 ${created.length} 件待辦！`);
     });
   });
   titleEl.focus();
@@ -519,7 +546,7 @@ function viewNoteEditor(id) {
   $app.innerHTML = `
     ${nav({
       back: existing ? '#/notes/list' : '#/',
-      backLabel: existing ? '筆記' : '隨手記',
+      backLabel: existing ? '筆記' : 'Beamup',
       actions: `<a class="icon-btn" href="#/notes/list" aria-label="全部筆記">${icon('list')}</a>
                 ${existing ? `<button class="icon-btn" id="more" aria-label="更多">${icon('ellipsis')}</button>` : ''}`,
     })}
@@ -665,6 +692,7 @@ function viewNoteEditor(id) {
     const result = await syncNote(saved);
     if (result.status === 'ok') {
       toast('已送到 OneNote');
+      queueCheer('筆記傳上 OneNote 了！');
       if (existing) location.hash = '#/notes/list';
       else if (/^#\/notes(\/new)?$/.test(location.hash)) viewNoteEditor(null); // 換成空白新筆記
       else location.hash = '#/notes/new';
@@ -733,7 +761,7 @@ function noteGroups(notes) {
 
 function viewNoteList() {
   $app.innerHTML = `
-    ${nav({ back: '#/', backLabel: '隨手記', title: '筆記' })}
+    ${nav({ back: '#/', backLabel: 'Beamup', title: '筆記' })}
     <main class="page has-toolbar" style="${featureVars('note')}">
       <h1 class="large-title">筆記</h1>
       <label class="search">${icon('search')}<input type="search" id="q" placeholder="搜尋" value="${esc(ui.noteQuery)}"></label>
@@ -809,7 +837,7 @@ function datebox(d, mini = false) {
 function viewEvents() {
   const cfg = settings().calendar;
   $app.innerHTML = `
-    ${nav({ back: '#/', backLabel: '隨手記', title: '行程' })}
+    ${nav({ back: '#/', backLabel: 'Beamup', title: '行程' })}
     <main class="page" style="${featureVars('event')}">
       <h1 class="large-title">行程</h1>
       <div class="composer">
@@ -933,6 +961,7 @@ function viewEvents() {
     db().events.push(record);
     save();
     const ev = parsed;
+    queueCheer(`「${ev.title}」排進行事曆了`);
     input.value = '';
     update();
     send(ev, record);
@@ -988,7 +1017,7 @@ function viewAppearance() {
   const ap = settings().appearance;
   const mode = effectiveMode(ap.mode);
   $app.innerHTML = `
-    ${nav({ back: '#/', backLabel: '隨手記', title: '外觀' })}
+    ${nav({ back: '#/', backLabel: 'Beamup', title: '外觀' })}
     <main class="page">
       <h1 class="large-title">外觀</h1>
 
@@ -1055,7 +1084,7 @@ function viewSettings() {
   ];
 
   $app.innerHTML = `
-    ${nav({ back: '#/', backLabel: '隨手記', title: '設定' })}
+    ${nav({ back: '#/', backLabel: 'Beamup', title: '設定' })}
     <main class="page">
       <h1 class="large-title">設定</h1>
 
@@ -1268,7 +1297,7 @@ function viewSettings() {
     const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
     const a = document.createElement('a');
     a.href = url;
-    a.download = `隨手記備份-${formatDate(new Date()).replace(/\//g, '')}.json`;
+    a.download = `Beamup-備份-${formatDate(new Date()).replace(/\//g, '')}.json`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
   });

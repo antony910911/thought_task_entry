@@ -14,7 +14,7 @@ export function payloadFor(todo) {
     priority: todo.priority || 'normal',
     tags: todo.tags || [],
     createdAt: todo.createdAt,
-    source: 'thought-task-entry',
+    source: 'beamup',
   };
 }
 
@@ -34,7 +34,7 @@ async function post(settings, payload) {
 
 /** 測試連線：送出 {"type":"ping"}，伺服器回 2xx 即成功 */
 export async function ping(settings) {
-  await post(settings, { type: 'ping', source: 'thought-task-entry', sentAt: new Date().toISOString() });
+  await post(settings, { type: 'ping', source: 'beamup', sentAt: new Date().toISOString() });
 }
 
 export async function sendTodo(todo, settings) {

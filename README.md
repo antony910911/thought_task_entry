@@ -1,4 +1,14 @@
-# 隨手記
+# Beamup
+
+> 想到就寫，Blip 幫你傳上去。
+
+首頁住著一隻像素外星人 **Blip**：
+- **戳他**會有反應（嚇一跳、怕癢、冒愛心、轉圈圈）；**連戳 5 下**他會頭暈。
+- **長按**是摸摸頭。**點空地**他會走過去。
+- 放著不管，他會自己散步、東張西望、跳舞、接星星，偶爾會有飛碟來找他；太久沒理他就會睡著，戳一下會醒來。
+- 他也會提醒你：還有幾件待辦、有沒有逾期、下一個行程是什麼。你完成待辦或送出筆記、行程後，回到首頁他會幫你慶祝。
+- Blip 的身體顏色會跟著配色換。
+
 
 iPhone 用的「待辦 / 筆記 / 行程」三合一小工具。打開後有三個入口：
 
@@ -84,7 +94,7 @@ App 透過 Microsoft 官方的 Microsoft Graph API 在你選定的分區建立�
 
 ### 需要先註冊一個 App（一次性，免費）
 1. 用公司帳號登入 <https://entra.microsoft.com>（或 portal.azure.com → Microsoft Entra ID）→ **應用程式註冊** → **新增註冊**。
-2. 名稱隨意，例如「隨手記」；支援的帳戶類型選 **「僅此組織目錄中的帳戶」**。
+2. 名稱隨意，例如「Beamup」；支援的帳戶類型選 **「僅此組織目錄中的帳戶」**。
 3. 重新導向 URI：平台選 **「單頁應用程式 (SPA)」**，填入 App 設定頁顯示的網址（也就是你部署的網址，例如 `https://xxx.pages.dev/`）。
 4. 建立後，複製 **應用程式 (用戶端) 識別碼** 和 **目錄 (租用戶) 識別碼**。
 5. **API 權限** → 新增 → Microsoft Graph → 委派的權限，勾選 `Notes.Create`、`User.Read`；要用 Outlook 寫行程的話，再勾 `Calendars.ReadWrite`。
@@ -116,7 +126,7 @@ Authorization: Bearer {token}        ← 有填 token 才會帶
   "priority": "high",                ← low | normal | high
   "tags": ["專案A"],
   "createdAt": "2026-10-08T12:00:00.000Z",
-  "source": "thought-task-entry"
+  "source": "beamup"
 }
 ```
 - 回應 2xx 就算成功。如果回應 `{"id": "..."}`，App 會記下遠端 id。
@@ -152,6 +162,7 @@ css/style.css          樣式（支援深色模式）
 js/app.js              畫面與路由
 js/themes.js           配色組合（要新增配色改這裡）
 js/icons.js            線條圖示
+js/mascot.js           Blip 外星人（像素圖、動作、互動）
 js/store.js            本機資料儲存
 js/parser.js           行程語句解析
 js/sync/todo.js        Webhook 同步
