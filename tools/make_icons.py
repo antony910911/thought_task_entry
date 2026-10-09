@@ -1,161 +1,126 @@
-"""產生 App 圖示：星空、飛碟光束把 Blip「beam up」。
+"""產生 App 圖示：紫色漸層背景上一台發光的飛碟。
 
 用法：python3 tools/make_icons.py（需要 Pillow）
 輸出：icons/apple-touch-icon.png、icon-192.png、icon-512.png、icon-maskable-512.png
 """
-import math
-import random
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
-S = 1024          # 先畫大圖再縮小，邊緣才漂亮
-U = 32            # 一個像素格 = 32px（整張 32×32 格）
-
-# Blip（與 js/aliens.js 相同的 16×16 圖）：睜眼、微笑、腮紅、雙手舉高
-BLIP = [
-    '...A........A...',
-    '....B......B....',
-    '.....B....B.....',
-    '....BBBBBBBB....',
-    '...BLLBBBBBBB...',
-    '..BLBBBBBBBBBB..',
-    '.BBBBBBBBBBBBBB.',
-    '.BBBBBBBBBBBBBB.',
-    '.BBBBBBBBBBBBBB.',
-    '..BBBBBBBBBBBB..',
-    '...DBBBBBBBBD...',
-    '.....DBBBBD.....',
-    '....BBBBBBBB....',
-    '....BBLLLLBB....',
-    '.....DD..DD.....',
-    '....DDD..DDD....',
-]
-EYE = [(6, 4, 'E'), (6, 5, 'W'), (6, 6, 'E'), (7, 3, 'E'), (7, 4, 'E'), (7, 5, 'E'), (7, 6, 'E'), (8, 4, 'E'), (8, 5, 'E')]
-MOUTH = [(9, 6), (9, 9), (10, 7), (10, 8)]
-ARMS_UP = [(12, 3), (11, 2), (10, 1), (12, 12), (11, 13), (10, 14)]
-UFO = [
-    '....GGGGG....',
-    '...GGWGGGG...',
-    '.TSSSSSSSSST.',
-    'SSYSSSYSSSYSS',
-    '.TTTTTTTTTTT.',
-    '...TT...TT...',
-]
-
-COL = {
-    'B': (52, 199, 89), 'D': (30, 128, 58), 'L': (150, 232, 170), 'A': (255, 214, 10),
-    'E': (24, 18, 48), 'W': (255, 255, 255), 'M': (24, 18, 48), 'P': (255, 140, 175),
-    'G': (150, 220, 255), 'S': (214, 218, 230), 'T': (140, 146, 168), 'Y': (255, 214, 10),
-}
+SS = 2048  # 先用兩倍大小畫，再縮小做反鋸齒
 
 
-def blip_grid():
-    g = [list(r) for r in BLIP]
-    for r, c, ch in EYE:
-        g[r][c] = ch
-        g[r][15 - c] = ch
-    for r, c in MOUTH:
-        g[r][c] = 'M'
-    g[8][2] = g[8][13] = 'P'
-    for r, c in [(12, 3), (13, 3), (12, 12), (13, 12)]:
-        g[r][c] = 'B'
-    for r, c in ARMS_UP:
-        g[r][c] = 'B'
-    return ["".join(r) for r in g]
+def gradient(size, stops, vertical=True):
+    """多段線性漸層。stops = [(位置0~1, (r,g,b)), ...]"""
+    w, h = size
+    n = h if vertical else w
+    line = Image.new('RGB', (1, n) if vertical else (n, 1))
+    px = line.load()
+    for i in range(n):
+        t = i / max(1, n - 1)
+        for (p0, c0), (p1, c1) in zip(stops, stops[1:]):
+            if p0 <= t <= p1:
+                k = (t - p0) / (p1 - p0 or 1)
+                c = tuple(int(c0[j] + (c1[j] - c0[j]) * k) for j in range(3))
+                px[(0, i) if vertical else (i, 0)] = c
+                break
+    return line.resize((w, h))
 
 
-def lerp(a, b, t):
-    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+def shape_mask(size, draw_fn, blur=0):
+    m = Image.new('L', size, 0)
+    draw_fn(ImageDraw.Draw(m))
+    return m.filter(ImageFilter.GaussianBlur(blur)) if blur else m
 
 
-def background():
-    img = Image.new('RGB', (S, S))
-    px = img.load()
-    top, mid, bottom = (74, 46, 196), (40, 22, 110), (14, 10, 38)
-    cx, cy = S * 0.5, S * 0.18
-    for y in range(S):
-        for x in range(S):
-            d = math.hypot(x - cx, (y - cy) * 0.9) / (S * 1.05)
-            t = min(1, d)
-            px[x, y] = lerp(top, mid, t / 0.55) if t < 0.55 else lerp(mid, bottom, (t - 0.55) / 0.45)
-    return img
+def paste_gradient(img, box, stops, draw_fn, blur=0, vertical=True):
+    """在 box 範圍內，用 draw_fn 畫出的形狀當遮罩貼上漸層"""
+    x0, y0, x1, y1 = [int(v) for v in box]
+    g = gradient((x1 - x0, y1 - y0), stops, vertical)
+    layer = Image.new('RGB', img.size)
+    layer.paste(g, (x0, y0))
+    img.paste(layer, (0, 0), shape_mask(img.size, draw_fn, blur))
 
 
-def draw_cells(draw, rows, ox, oy, unit, colors, shadow=None):
-    for r, row in enumerate(rows):
-        for c, ch in enumerate(row):
-            if ch == '.':
-                continue
-            x, y = ox + c * unit, oy + r * unit
-            draw.rectangle([x, y, x + unit - 1, y + unit - 1], fill=shadow or colors[ch])
+def glow(img, draw_fn, color, blur):
+    layer = Image.new('RGB', img.size, (0, 0, 0))
+    m = shape_mask(img.size, draw_fn, blur)
+    layer.paste(Image.new('RGB', img.size, color), (0, 0), m)
+    return ImageChops.screen(img, layer)
 
 
 def render(scale=1.0):
-    img = background().convert('RGBA')
-    u = U * scale
-    off = (S - S * scale) / 2  # 置中（maskable 版會縮小留邊）
+    S = SS
+    img = gradient((S, S), [(0, (34, 22, 92)), (0.55, (76, 40, 170)), (1, (150, 66, 214))])
 
-    # 星星：小方塊與十字閃光
-    rnd = random.Random(11)
-    stars = Image.new('RGBA', (S, S), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(stars)
-    for _ in range(26):
-        x = rnd.randrange(0, 32) * U
-        y = rnd.randrange(0, 32) * U
-        if 9 * U < x < 23 * U:
-            continue  # 光束區留乾淨
-        a = rnd.choice([110, 160, 220])
-        s = U // 2
-        sd.rectangle([x, y, x + s, y + s], fill=(235, 230, 255, a))
-    for x, y in [(4.5, 7), (26.5, 11), (6, 24), (27, 25.5)]:
-        x, y = x * U, y * U
-        for dx, dy in [(0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)]:
-            sd.rectangle([x + dx * U / 2, y + dy * U / 2, x + dx * U / 2 + U / 2 - 1, y + dy * U / 2 + U / 2 - 1], fill=(255, 236, 160, 230))
-    img = Image.alpha_composite(img, stars)
+    def P(x, y):  # 以中心為準縮放（maskable 版本會縮小留邊）
+        return (S / 2 + (x - 0.5) * S * scale, S / 2 + (y - 0.5) * S * scale)
 
-    ufo_w = len(UFO[0]) * u
-    ufo_x = off + (S * scale - ufo_w) / 2
-    ufo_y = off + 2.2 * u
-    beam_top = ufo_y + 5 * u
-    blip_w = 16 * u
-    blip_x = off + (S * scale - blip_w) / 2
-    blip_y = off + 12.5 * u
+    def box(x0, y0, x1, y1):
+        a, b = P(x0, y0)
+        c, d = P(x1, y1)
+        return [a, b, c, d]
 
-    # 光束：用「濾色」疊加，看起來像真的在發光
+    # 背後的柔光
+    img = glow(img, lambda d: d.ellipse(box(0.12, 0.12, 0.88, 0.75), fill=255), (70, 40, 120), S * 0.09)
+
+    # 星星：四角閃光
+    def sparkle(d, cx, cy, r):
+        x, y = P(cx, cy)
+        r *= S * scale
+        d.polygon([(x, y - r), (x + r * 0.22, y - r * 0.22), (x + r, y), (x + r * 0.22, y + r * 0.22),
+                   (x, y + r), (x - r * 0.22, y + r * 0.22), (x - r, y), (x - r * 0.22, y - r * 0.22)], fill=255)
+
+    stars = [(0.2, 0.2, 0.035), (0.82, 0.16, 0.025), (0.86, 0.62, 0.03), (0.14, 0.7, 0.022), (0.7, 0.86, 0.018)]
+    img = glow(img, lambda d: [sparkle(d, *s) for s in stars], (255, 255, 255), 0)
+    img = glow(img, lambda d: [sparkle(d, *s) for s in stars], (180, 160, 255), S * 0.008)
+    dots = [(0.32, 0.12), (0.62, 0.09), (0.92, 0.36), (0.08, 0.45), (0.3, 0.9), (0.9, 0.9)]
+    img = glow(img, lambda d: [d.ellipse(box(x - 0.006, y - 0.006, x + 0.006, y + 0.006), fill=255) for x, y in dots], (230, 220, 255), 0)
+
+    # 光束：從飛碟底部往下擴散的暖光
+    def beam_shape(d):
+        d.polygon([P(0.40, 0.56), P(0.60, 0.56), P(0.80, 1.05), P(0.20, 1.05)], fill=255)
+
     beam = Image.new('RGB', (S, S), (0, 0, 0))
-    bd = ImageDraw.Draw(beam)
-    steps = 80
-    for i in range(steps):
-        t = i / steps
-        y0 = beam_top + (S - beam_top) * t
-        y1 = beam_top + (S - beam_top) * (t + 1 / steps) + 1
-        half = (3.0 + 8.8 * t) * u
-        k = (1 - t) ** 1.3 * 0.75 + 0.12
-        bd.rectangle([S / 2 - half, y0, S / 2 + half, y1], fill=(int(255 * k), int(232 * k), int(150 * k)))
-    beam = beam.filter(ImageFilter.GaussianBlur(16 * scale))
-    img = ImageChops.screen(img.convert('RGB'), beam).convert('RGBA')
+    beam.paste(gradient((S, S), [(0, (0, 0, 0)), (0.5, (0, 0, 0)), (0.56, (255, 214, 120)), (1, (70, 40, 60))]), (0, 0),
+               shape_mask((S, S), beam_shape, S * 0.03))
+    img = ImageChops.screen(img, beam)
 
-    # 光束裡往上飄的光點
-    sparks = Image.new('RGBA', (S, S), (0, 0, 0, 0))
-    spd = ImageDraw.Draw(sparks)
-    for x, y in [(11.5, 11), (20, 9.5), (10, 26), (21.5, 22), (13, 30), (19, 29)]:
-        x, y = off + x * u, off + y * u
-        spd.rectangle([x, y, x + u / 2, y + u / 2], fill=(255, 245, 200, 230))
-    img = Image.alpha_composite(img, sparks)
+    # 飛碟陰影（讓飛碟浮起來）
+    shadow = Image.new('RGB', (S, S), (0, 0, 0))
+    m = shape_mask((S, S), lambda d: d.ellipse(box(0.16, 0.47, 0.84, 0.62), fill=255), S * 0.025)
+    img = Image.composite(Image.new('RGB', (S, S), (16, 8, 40)), img, m.point(lambda v: int(v * 0.55)))
 
-    # Blip 的發光外框與陰影，讓角色從背景跳出來
-    grid = blip_grid()
-    glow = Image.new('RGB', (S, S), (0, 0, 0))
-    draw_cells(ImageDraw.Draw(glow), grid, blip_x, blip_y, u, COL, shadow=(150, 140, 90))
-    glow = glow.filter(ImageFilter.GaussianBlur(26 * scale))
-    img = ImageChops.screen(img.convert('RGB'), glow).convert('RGBA')
-    shadow = Image.new('RGBA', (S, S), (0, 0, 0, 0))
-    draw_cells(ImageDraw.Draw(shadow), grid, blip_x + u * 0.35, blip_y + u * 0.45, u, COL, shadow=(10, 6, 30, 150))
-    img = Image.alpha_composite(img, shadow)
+    # 玻璃罩
+    paste_gradient(img, box(0.33, 0.25, 0.67, 0.48), [(0, (210, 244, 255)), (1, (92, 176, 245))],
+                   lambda d: d.chord(box(0.33, 0.25, 0.67, 0.61), 180, 360, fill=255))
+    # 玻璃罩反光
+    hl = shape_mask((S, S), lambda d: d.chord(box(0.37, 0.28, 0.52, 0.45), 190, 300, fill=255), S * 0.004)
+    img = Image.composite(Image.new('RGB', (S, S), (255, 255, 255)), img, hl.point(lambda v: int(v * 0.75)))
 
+    # 機身底部（深色的下半圈）
+    paste_gradient(img, box(0.14, 0.42, 0.86, 0.60), [(0, (120, 126, 158)), (1, (58, 60, 92))],
+                   lambda d: d.ellipse(box(0.14, 0.42, 0.86, 0.60), fill=255))
+    # 機身上半（亮銀色）
+    paste_gradient(img, box(0.14, 0.40, 0.86, 0.54), [(0, (255, 255, 255)), (0.6, (214, 218, 234)), (1, (168, 174, 200))],
+                   lambda d: d.ellipse(box(0.14, 0.40, 0.86, 0.54), fill=255))
+    # 機身亮線
+    img = glow(img, lambda d: d.arc(box(0.2, 0.415, 0.8, 0.5), 200, 340, fill=255, width=int(S * 0.006 * scale)),
+               (255, 255, 255), S * 0.002)
+
+    # 一圈燈
+    lights = [0.24, 0.37, 0.5, 0.63, 0.76]
+    ys = [0.535, 0.558, 0.565, 0.558, 0.535]
+    for x, y in zip(lights, ys):
+        img = glow(img, lambda d, x=x, y=y: d.ellipse(box(x - 0.04, y - 0.03, x + 0.04, y + 0.03), fill=255), (255, 170, 40), S * 0.018)
+        paste_gradient(img, box(x - 0.024, y - 0.02, x + 0.024, y + 0.02), [(0, (255, 248, 200)), (1, (255, 196, 30))],
+                       lambda d, x=x, y=y: d.ellipse(box(x - 0.024, y - 0.02, x + 0.024, y + 0.02), fill=255))
+    # 天線
     d = ImageDraw.Draw(img)
-    draw_cells(d, grid, blip_x, blip_y, u, COL)
-    draw_cells(d, UFO, ufo_x, ufo_y, u, COL)
-    return img.convert('RGB')
+    d.line([P(0.5, 0.25), P(0.5, 0.19)], fill=(150, 156, 190), width=int(S * 0.012 * scale))
+    img = glow(img, lambda d: d.ellipse(box(0.475, 0.155, 0.525, 0.205), fill=255), (255, 120, 170), S * 0.02)
+    paste_gradient(img, box(0.482, 0.162, 0.518, 0.198), [(0, (255, 200, 225)), (1, (255, 90, 150))],
+                   lambda d: d.ellipse(box(0.482, 0.162, 0.518, 0.198), fill=255))
+
+    return img.resize((S // 2, S // 2), Image.LANCZOS)
 
 
 if __name__ == '__main__':
