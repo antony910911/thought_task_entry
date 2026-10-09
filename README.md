@@ -171,11 +171,11 @@ App 透過 Microsoft 官方的 Microsoft Graph API 在你選定的分區建立�
 
 ## 4. 待辦：送到你自己的專案管理工具
 
-### 送到 Arbor（不用自己架伺服器）
-1. 打開 Arbor → 外觀 → **連接 Beamup** → 產生並複製連接碼（`pm1.` 開頭）。第一次要先在 Supabase 執行 Arbor 的 `supabase/inbox.sql`。
+### 送到 Mothership（不用自己架伺服器）
+1. 打開 Mothership → 外觀 → **連接 Beamup** → 產生並複製連接碼（`pm1.` 開頭）。第一次要先在 Supabase 執行 Mothership 的 `supabase/inbox.sql`。
 2. 回到 Beamup → 設定 → 「待辦事項 → 專案管理工具」，把連接碼貼進第一格，按「測試連線」。
 
-之後新增的待辦會直接變成 Arbor 雙層模式上方「待辦」清單的卡片（高優先進「急件」），修改、勾選完成也會同步。Token 欄位不用填。
+之後新增的待辦會直接變成 Mothership 雙層模式上方「待辦」清單的卡片（高優先進「急件」），修改、勾選完成也會同步。Token 欄位不用填。
 
 ### 送到自己的伺服器（Webhook）
 
@@ -248,7 +248,7 @@ js/capture.js          萬用輸入的自動分類
 js/pet.js              養成規則（能量、等級、連續天數、配件解鎖）
 js/store.js            本機資料儲存
 js/parser.js           行程語句解析
-js/sync/todo.js        待辦同步（Arbor 連接碼或 Webhook）
+js/sync/todo.js        待辦同步（Mothership 連接碼或 Webhook）
 js/sync/microsoft.js   Microsoft 登入（PKCE）、OneNote、Outlook
 js/sync/calendar.js    iOS 捷徑網址、.ics 產生
 tests/                 單元測試（node --test）
