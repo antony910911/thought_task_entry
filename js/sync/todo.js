@@ -1,5 +1,5 @@
 // 把待辦事項 POST 到你自己的專案管理工具（Webhook）。格式見 README「待辦事項 Webhook 格式」。
-// 「網址」欄也可以貼 Project Manager 的連接碼（pm1. 開頭），待辦會直接進 Project Manager 上方的「待辦」清單。
+// 「網址」欄也可以貼 Arbor 的連接碼（pm1. 開頭），待辦會直接進 Arbor 上方的「待辦」清單。
 
 export function isConfigured(settings) {
   return Boolean(settings.todo.webhookUrl);
@@ -28,7 +28,7 @@ export function payloadFor(todo, type = 'todo.created') {
 }
 
 /**
- * Project Manager 連接碼："pm1." + base64url(JSON {u: Supabase 網址, k: 公開金鑰, s: 你的私密碼})。
+ * Arbor 連接碼："pm1." + base64url(JSON {u: Supabase 網址, k: 公開金鑰, s: 你的私密碼})。
  * 不是連接碼就回傳 null。
  */
 export function parseConnectionCode(text) {
@@ -44,7 +44,7 @@ export function parseConnectionCode(text) {
   }
 }
 
-/** 送到 Project Manager（Supabase 的 inbox_push 函式，見 Project Manager 的 supabase/inbox.sql） */
+/** 送到 Arbor（Supabase 的 inbox_push 函式，見 Arbor 的 supabase/inbox.sql） */
 async function postToProjectManager(pm, payload) {
   let res;
   try {
@@ -54,7 +54,7 @@ async function postToProjectManager(pm, payload) {
       body: JSON.stringify({ p_key: pm.secret, p_item: payload }),
     });
   } catch {
-    throw new Error('連不到 Project Manager（離線？）');
+    throw new Error('連不到 Arbor（離線？）');
   }
   if (res.ok) return res;
   let msg = '';
@@ -63,9 +63,9 @@ async function postToProjectManager(pm, payload) {
   } catch {
     // 沒有內容
   }
-  if (/invalid connection code/.test(msg)) throw new Error('連接碼已失效，請到 Project Manager 重新複製');
-  if (res.status === 404) throw new Error('Project Manager 還沒設定好（要先在 Supabase 執行 inbox.sql）');
-  throw new Error(`Project Manager 回應 ${res.status}${msg ? '：' + msg : ''}`);
+  if (/invalid connection code/.test(msg)) throw new Error('連接碼已失效，請到 Arbor 重新複製');
+  if (res.status === 404) throw new Error('Arbor 還沒設定好（要先在 Supabase 執行 inbox.sql）');
+  throw new Error(`Arbor 回應 ${res.status}${msg ? '：' + msg : ''}`);
 }
 
 async function post(settings, payload) {

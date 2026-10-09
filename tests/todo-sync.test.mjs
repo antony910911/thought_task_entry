@@ -2,11 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseConnectionCode, sendTodo, ping } from '../js/sync/todo.js';
 
-// 跟 Project Manager src/inbox.ts 的 connectionCode() 同樣的編碼
+// 跟 Arbor src/inbox.ts 的 connectionCode() 同樣的編碼
 const code = (v) => 'pm1.' + Buffer.from(JSON.stringify(v)).toString('base64url');
 const pmCode = code({ u: 'https://abc.supabase.co', k: 'anon-key', s: 'secret-123' });
 
-test('解析 Project Manager 連接碼', () => {
+test('解析 Arbor 連接碼', () => {
   assert.deepEqual(parseConnectionCode(pmCode), { url: 'https://abc.supabase.co', key: 'anon-key', secret: 'secret-123' });
   assert.deepEqual(parseConnectionCode('  ' + pmCode + '\n').secret, 'secret-123');
   assert.equal(parseConnectionCode('https://example.com/api/todos'), null);

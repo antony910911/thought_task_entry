@@ -279,7 +279,61 @@ const BOLT = {
   }),
 };
 
-export const CHARACTERS = { blip: BLIP, zorp: ZORP, pom: POM, glim: GLIM, bolt: BOLT };
+const MUMU = {
+  anchor: { top: 3, eye: 6 },
+  rideRows: 11,
+  name: 'Mumu',
+  desc: '纏滿繃帶的木乃伊星人',
+  intro: '嗚喔～Mumu 從金字塔飛來了',
+  lines: ['繃帶好像鬆了…', '我睡了三千年，好睏', '別拉我的繃帶啦！'],
+  weights: { think: 14, idle: 26 },
+  base: [
+    '...A........A...',
+    '...B........B...',
+    '....B......B....',
+    '...BBBBBBBBBB...',
+    '..BLLDDBBBDDBB..',
+    '.BLBBBBBBBBBBBB.',
+    '.QQQQQQQQQQQQQQ.',
+    '.QQQQQQQQQQQQQQ.',
+    '.BQQQQQQQQQQQQB.',
+    '.BBBBBBBBBBBBBB.',
+    '..BBDDDBBDDDBBD.',
+    '...DBBBBBBBBD..D',
+    '....BDDBBDDB....',
+    '....BBBDDBBB....',
+    '.....DD..DD.....',
+    '....DDD..DDD....',
+  ],
+  legs: [[14, '....DD....DD....'], [15, '...DDD....DDD...']],
+  glow: [[0, 3], [0, 12]],
+  // 繃帶縫裡發光的眼睛
+  eyes: {
+    normal: [[6, 4, 'E'], [6, 5, 'W'], [6, 6, 'E'], [7, 3, 'E'], [7, 4, 'E'], [7, 5, 'E'], [7, 6, 'E'], [8, 4, 'E'], [8, 5, 'E']],
+    blink: [[7, 3, 'E'], [7, 4, 'E'], [7, 5, 'E'], [7, 6, 'E']],
+    closed: [[7, 3, 'D'], [7, 4, 'D'], [7, 5, 'D'], [7, 6, 'D']],
+    happy: [[7, 3, 'E'], [6, 4, 'E'], [6, 5, 'E'], [7, 6, 'E']],
+    surprised: [[6, 3, 'E'], [6, 4, 'W'], [6, 5, 'E'], [6, 6, 'E'], [7, 3, 'E'], [7, 4, 'E'], [7, 5, 'E'], [7, 6, 'E'], [8, 4, 'E'], [8, 5, 'E']],
+    dizzy: [[6, 3, 'E'], [6, 6, 'E'], [7, 4, 'E'], [7, 5, 'E'], [8, 3, 'E'], [8, 6, 'E']],
+  },
+  mouths: {
+    smile: [[9, 6], [9, 9], [10, 7], [10, 8]],
+    neutral: [[9, 7], [9, 8]],
+    open: [[9, 7], [9, 8], [10, 7], [10, 8]],
+    wavy: [[9, 6], [10, 7], [9, 8], [10, 9]],
+  },
+  cheeks: [[9, 2], [9, 13]],
+  arms: {
+    down: [[12, 3], [13, 3], [12, 12], [13, 12]],
+    up: [[12, 3], [11, 2], [10, 1], [12, 12], [11, 13], [10, 14]],
+    upL: [[12, 3], [11, 2], [10, 1], [12, 12], [13, 12]],
+    upR: [[12, 3], [13, 3], [12, 12], [11, 13], [10, 14]],
+    midR: [[12, 3], [13, 3], [12, 12], [12, 13], [12, 14]],
+  },
+  colors: () => ({ B: '#EFE5C8', D: '#C4B489', L: '#FFFBEE', A: '#7DFFAE', Q: '#3B2F2A', E: '#7DFFAE' }),
+};
+
+export const CHARACTERS = { blip: BLIP, zorp: ZORP, pom: POM, glim: GLIM, bolt: BOLT, mumu: MUMU };
 
 export const ALIENS = Object.entries(CHARACTERS).map(([id, c]) => ({ id, name: c.name, desc: c.desc }));
 
