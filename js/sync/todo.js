@@ -1,4 +1,5 @@
 // 把待辦事項 POST 到你自己的專案管理工具（Webhook）。格式見 README「待辦事項 Webhook 格式」。
+// 「網址」欄也可以貼 Arbor 的連接碼（pm1. 開頭），待辦會直接進 Arbor 上方的「待辦」清單。
 
 export function isConfigured(settings) {
   return Boolean(settings.todo.webhookUrl);
@@ -26,8 +27,51 @@ export function payloadFor(todo, type = 'todo.created') {
   };
 }
 
+/**
+ * Arbor 連接碼："pm1." + base64url(JSON {u: Supabase 網址, k: 公開金鑰, s: 你的私密碼})。
+ * 不是連接碼就回傳 null。
+ */
+export function parseConnectionCode(text) {
+  const m = /^pm1\.([A-Za-z0-9_-]+)$/.exec(String(text || '').trim());
+  if (!m) return null;
+  try {
+    const b64 = m[1].replace(/-/g, '+').replace(/_/g, '/');
+    const bytes = Uint8Array.from(atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4)), (c) => c.charCodeAt(0));
+    const v = JSON.parse(new TextDecoder().decode(bytes));
+    return v && /^https:\/\//.test(v.u) && v.k && v.s ? { url: v.u, key: v.k, secret: v.s } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 送到 Arbor（Supabase 的 inbox_push 函式，見 Arbor 的 supabase/inbox.sql） */
+async function postToProjectManager(pm, payload) {
+  let res;
+  try {
+    res = await fetch(`${pm.url}/rest/v1/rpc/inbox_push`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: pm.key, Authorization: `Bearer ${pm.key}` },
+      body: JSON.stringify({ p_key: pm.secret, p_item: payload }),
+    });
+  } catch {
+    throw new Error('連不到 Arbor（離線？）');
+  }
+  if (res.ok) return res;
+  let msg = '';
+  try {
+    msg = (await res.json()).message || '';
+  } catch {
+    // 沒有內容
+  }
+  if (/invalid connection code/.test(msg)) throw new Error('連接碼已失效，請到 Arbor 重新複製');
+  if (res.status === 404) throw new Error('Arbor 還沒設定好（要先在 Supabase 執行 inbox.sql）');
+  throw new Error(`Arbor 回應 ${res.status}${msg ? '：' + msg : ''}`);
+}
+
 async function post(settings, payload) {
   const { webhookUrl, token } = settings.todo;
+  const pm = parseConnectionCode(webhookUrl);
+  if (pm) return postToProjectManager(pm, payload);
   const headers = { 'Content-Type': 'application/json' };
   if (token) headers.Authorization = `Bearer ${token}`;
   let res;

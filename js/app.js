@@ -1837,7 +1837,7 @@ function viewSettings() {
       <ul class="group icons">
         <li class="cell">
           <span class="cell-icon" style="${featureVars('todo')}">${icon('link')}</span>
-          <label class="cell-label field"><span>Webhook 網址</span><input id="webhookUrl" type="url" inputmode="url" placeholder="https://…/api/todos" value="${esc(s.todo.webhookUrl)}"></label>
+          <label class="cell-label field"><span>Arbor 連接碼或 Webhook 網址</span><input id="webhookUrl" type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="pm1.… 或 https://…/api/todos" value="${esc(s.todo.webhookUrl)}"></label>
         </li>
         <li class="cell">
           <span class="cell-icon" style="--c: var(--gray)">${icon('key')}</span>
@@ -1845,7 +1845,7 @@ function viewSettings() {
         </li>
         <li><button class="cell action tap" id="ping">測試連線</button></li>
       </ul>
-      <p class="group-footer">每新增一筆待辦，會 POST 一份 JSON 到這個網址，格式請見 README。</p>
+      <p class="group-footer">貼上 Arbor「外觀 › 連接 Beamup」的連接碼，新增的待辦就會直接進 Arbor 上方的「待辦」清單（高優先進「急件」），修改、勾選完成也會同步。用 Webhook 時會 POST 一份 JSON 到這個網址，格式請見 README；Token 只有 Webhook 會用到。</p>
 
       <h2 class="group-header">Microsoft 帳號（OneNote${s.calendar.mode === 'outlook' ? '・Outlook' : ''}）</h2>
       <ul class="group icons">
@@ -1982,7 +1982,7 @@ function viewSettings() {
   bindField('duration', s.calendar, 'defaultDuration', () => ($('durText').textContent = `${s.calendar.defaultDuration} 分鐘`));
 
   $('ping').addEventListener('click', async () => {
-    if (!s.todo.webhookUrl) return toast('請先填入 Webhook 網址', 'error');
+    if (!s.todo.webhookUrl) return toast('請先填入連接碼或 Webhook 網址', 'error');
     try {
       await todoSync.ping(s);
       toast('連線成功');
