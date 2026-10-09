@@ -401,7 +401,7 @@ function bindCapture(refreshHome) {
   let result = null;
 
   const update = () => {
-    autosize(input, 44);
+    autosize(input, 124);
     ui.capture = input.value;
     const text = input.value.trim();
     if (!text) forced = null;
@@ -517,7 +517,7 @@ function viewHome() {
       </section>
 
       <form class="capture" id="capture" autocomplete="off">
-        <textarea id="captureInput" rows="1" placeholder="丟給 ${esc(character(settings().appearance.alien).name)}：想到什麼都可以打…" enterkeyhint="send"></textarea>
+        <textarea id="captureInput" rows="4" placeholder="丟給 ${esc(character(settings().appearance.alien).name)}：想到什麼都可以打…" enterkeyhint="send"></textarea>
         <div class="capture-foot">
           <div class="seg capture-type" id="captureType">
             <button type="button" data-type="todo">待辦</button><button type="button" data-type="note">筆記</button><button type="button" data-type="event">行程</button>
