@@ -84,6 +84,33 @@ async function post(settings, payload) {
   return res;
 }
 
+/** 行程模式選「Mothership」時需要設定好連接碼 */
+export function mothershipReady(settings) {
+  return Boolean(parseConnectionCode(settings.todo.webhookUrl));
+}
+
+/**
+ * 把行程送到 Mothership：變成「行事曆」清單的卡片，再由 Mothership 寫進它連接的行事曆（iCloud／Google／Outlook）。
+ * @param {'event.created'|'event.updated'|'event.deleted'} type
+ */
+export async function sendEvent(record, type, settings) {
+  const pm = parseConnectionCode(settings.todo.webhookUrl);
+  if (!pm) throw new Error('請先在設定貼上 Mothership 連接碼');
+  const notes = [record.location ? '@' + record.location : '', record.notes, (record.tags || []).map((t) => '#' + t).join(' ')]
+    .filter(Boolean)
+    .join('\n');
+  await postToProjectManager(pm, {
+    type,
+    id: record.id,
+    title: record.title,
+    notes,
+    allDay: Boolean(record.allDay),
+    start: new Date(record.start).toISOString(),
+    end: new Date(record.end).toISOString(),
+    source: 'beamup',
+  });
+}
+
 /** 測試連線：送出 {"type":"ping"}，伺服器回 2xx 即成功 */
 export async function ping(settings) {
   await post(settings, { type: 'ping', source: 'beamup', sentAt: new Date().toISOString() });

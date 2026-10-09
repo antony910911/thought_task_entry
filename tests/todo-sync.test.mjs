@@ -46,3 +46,24 @@ test('一般 Webhook 照舊', async () => {
   assert.equal(seen.url, 'https://example.com/hook');
   assert.equal(seen.init.headers.Authorization, 'Bearer tk');
 });
+
+test('行程送到 Mothership：時間、地點、標籤都帶上', async () => {
+  const calls = [];
+  globalThis.fetch = async (url, init) => (calls.push({ url, init }), new Response('{}', { status: 200 }));
+  const { sendEvent, mothershipReady } = await import('../js/sync/todo.js');
+  const settings = { todo: { webhookUrl: pmCode, token: '' } };
+  assert.equal(mothershipReady(settings), true);
+  assert.equal(mothershipReady({ todo: { webhookUrl: 'https://x', token: '' } }), false);
+  await sendEvent(
+    { id: 'e1', title: '跟廠商開會', location: '會議室', notes: '帶樣品', tags: ['專案A'], allDay: false, start: '2026-11-12T06:00:00.000Z', end: '2026-11-12T07:00:00.000Z' },
+    'event.created',
+    settings
+  );
+  const body = JSON.parse(calls[0].init.body);
+  assert.equal(calls[0].url, 'https://abc.supabase.co/rest/v1/rpc/inbox_push');
+  assert.deepEqual(
+    { ...body.p_item },
+    { type: 'event.created', id: 'e1', title: '跟廠商開會', notes: '@會議室\n帶樣品\n#專案A', allDay: false, start: '2026-11-12T06:00:00.000Z', end: '2026-11-12T07:00:00.000Z', source: 'beamup' }
+  );
+  await assert.rejects(sendEvent({ id: 'x', title: 't', start: 0, end: 0 }, 'event.created', { todo: { webhookUrl: '', token: '' } }), /連接碼/);
+});
