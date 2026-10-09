@@ -245,6 +245,14 @@ export async function createOutlookEvent(ev, settings) {
   return created.id;
 }
 
+export async function deleteOutlookEvent(id, settings) {
+  try {
+    await graph(settings, `/me/events/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  } catch (e) {
+    if (!/ 404/.test(e.message)) throw e; // 已經在 Outlook 刪掉了就當成功
+  }
+}
+
 export async function updateOutlookEvent(id, ev, settings) {
   const body = {
     subject: ev.title,

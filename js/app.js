@@ -1317,10 +1317,10 @@ async function deliverEvent(ev, record, onChange = () => {}) {
       record.sync = { ...record.sync, status: 'pending' };
       onChange();
       const remoteId =
-        ev.replace && record.sync.remoteId
+        ev.replace && record.sync.remoteId && record.sync.via === 'outlook'
           ? await ms.updateOutlookEvent(record.sync.remoteId, ev, settings())
           : await ms.createOutlookEvent(ev, settings());
-      record.sync = { status: 'ok', at: new Date().toISOString(), remoteId };
+      record.sync = { status: 'ok', at: new Date().toISOString(), remoteId, via: 'outlook' };
       toast(ev.replace ? '已更新 Outlook 行事曆' : '已加入 Outlook 行事曆');
     } else if (cfg.mode === 'ics') {
       cal.openIcs(ev, record.id);
@@ -1512,9 +1512,17 @@ function viewEvents() {
         { label: '修改', run: () => setEditing(record) },
         { label: '再加入一次行事曆', run: () => deliverEvent(toEvent(record), record, renderHistory) },
         {
-          label: '刪除紀錄',
+          label: record.sync && record.sync.via === 'outlook' ? '刪除（Outlook 行事曆也一起刪）' : '刪除紀錄（行事曆裡的要手動刪）',
           danger: true,
-          run: () => {
+          run: async () => {
+            if (record.sync && record.sync.via === 'outlook' && record.sync.remoteId) {
+              try {
+                await ms.deleteOutlookEvent(record.sync.remoteId, settings());
+                toast('已從 Outlook 行事曆刪除');
+              } catch (e) {
+                return toast(`刪除失敗：${e.message}`, 'error');
+              }
+            }
             db().events = db().events.filter((r) => r !== record);
             save();
             renderHistory();
