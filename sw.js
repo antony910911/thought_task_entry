@@ -1,6 +1,6 @@
 // 離線快取：App 本身的檔案先從快取讀，背景再更新。外部 API（Microsoft、Webhook）一律不快取。
 // 新版檔案會在背景下載、下次開啟生效；新增或改名檔案時請更新 FILES 並把 VERSION 加一。
-const VERSION = 'v16';
+const VERSION = 'v17';
 const CACHE = `beamup-${VERSION}`;
 const FILES = [
   './',
@@ -20,6 +20,7 @@ const FILES = [
   './js/sync/microsoft.js',
   './js/sync/calendar.js',
   './js/sync/folio.js',
+  './js/sync/cloud.js',
   './icons/apple-touch-icon.png',
   './icons/icon-192.png',
   './icons/icon-512.png',

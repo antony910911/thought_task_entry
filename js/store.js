@@ -1,4 +1,4 @@
-// 所有資料都存在手機本機（localStorage），不會上傳到任何地方，除非你按下同步。
+// 所有資料都存在這台裝置（localStorage）；打開「跨裝置同步」時，變動會再送到同步伺服器（見 sync/cloud.js）。
 
 const KEY = 'tte.data.v1';
 
@@ -51,8 +51,15 @@ function load() {
   }
 }
 
-export function save() {
+let onSave = null;
+/** 每次存檔後通知（跨裝置同步用）；同步自己套用的變更不會再通知 */
+export function setOnSave(fn) {
+  onSave = fn;
+}
+
+export function save({ fromSync = false } = {}) {
   localStorage.setItem(KEY, JSON.stringify(state));
+  if (!fromSync) onSave?.();
 }
 
 export function db() {

@@ -1,4 +1,4 @@
-import { db, save, uid, replaceAll } from './store.js';
+import { db, save, uid, replaceAll, setOnSave } from './store.js';
 import { parseEvent, formatRange, formatDate, formatTime } from './parser.js';
 import { icon } from './icons.js';
 import { THEMES, MODES, themeById, applyTheme, effectiveMode } from './themes.js';
@@ -10,6 +10,7 @@ import * as todoSync from './sync/todo.js';
 import * as ms from './sync/microsoft.js';
 import * as cal from './sync/calendar.js';
 import * as folio from './sync/folio.js';
+import * as cloud from './sync/cloud.js';
 
 const $app = document.getElementById('app');
 const DRAFT_KEY = 'tte.noteDraft';
@@ -1944,6 +1945,10 @@ function viewSettings() {
         ${settingsRow({ href: '#/appearance', icon: 'palette', color: '', label: '外觀', value: statusValue(`${theme.name} · ${modeName}`) })}
       </ul>
 
+      <ul class="group icons">
+        ${settingsRow({ href: '#/settings/devices', icon: 'retry', color: '--c: #30B0C7', label: '跨裝置同步', sub: '手機、電腦共用同一份資料', value: statusValue(cloud.status().enabled ? (cloud.status().error ? '有問題' : '開啟') : '') })}
+      </ul>
+
       <h2 class="group-header">同步到哪裡</h2>
       <ul class="group icons">
         ${settingsRow({ href: '#/settings/todo', icon: 'checklist', color: featureVars('todo'), label: '待辦', value: statusValue(todoLinkStatus(s)) })}
@@ -1990,7 +1995,7 @@ function viewSettings() {
           <input type="file" id="import" accept="application/json" hidden>
         </label></li>
       </ul>
-      <p class="group-footer">資料都存在這支手機上。iOS 若長時間沒開 App 可能清除網頁資料，建議偶爾匯出備份。</p>
+      <p class="group-footer">${cloud.status().enabled ? "資料存在這台裝置，也同步到你的雲端（跨裝置同步）。" : "資料只存在這台裝置。iOS 若長時間沒開 App 可能清除網頁資料，建議打開跨裝置同步，或偶爾匯出備份。"}</p>
 
       <h2 class="group-header">進階</h2>
       <ul class="group icons">
@@ -2045,6 +2050,67 @@ function viewSettings() {
     } catch {
       toast('檔案格式不正確', 'error');
     }
+  });
+}
+
+function viewSettingsDevices() {
+  const s = settings();
+  const st = cloud.status();
+  const ready = folio.isConfigured(s);
+  const line = st.busy
+    ? '同步中…'
+    : st.error
+      ? `<span style="color:var(--danger)">${esc(st.error)}</span>`
+      : st.lastAt
+        ? `上次同步：${esc(shortTime(st.lastAt))}`
+        : '';
+  settingsPage(
+    '跨裝置同步',
+    `
+      <ul class="group icons">
+        <li class="cell">
+          <span class="cell-icon" style="--c: #30B0C7">${icon('retry')}</span>
+          <label class="cell-label" for="cloudOn">跨裝置同步${line ? `<small id="cloudLine">${line}</small>` : ''}</label>
+          <input type="checkbox" class="switch" id="cloudOn" ${st.enabled ? 'checked' : ''} ${ready || st.enabled ? '' : 'disabled'}>
+        </li>
+        ${st.enabled ? '<li><button class="cell action tap" id="cloudNow">立即同步</button></li>' : ''}
+      </ul>
+      ${
+        ready
+          ? ''
+          : `<ul class="group icons" style="margin-top:16px">${settingsRow({ href: '#/settings/notes', icon: 'key', color: '--c: var(--warning)', label: '先填好 Folio 網址和同步密碼', sub: '同步會用你的 Folio 同步伺服器，不用另外設定' })}</ul>`
+      }
+      <p class="group-footer">待辦、筆記、行程、標籤、外星人和設定會在每台打開同步的裝置之間自動同步：打開 App、回到畫面、有變動時都會同步，開著的時候每 30 秒檢查一次。資料存在你自己的 Folio 同步伺服器（Folio App 不會顯示這些資料）。</p>
+
+      <h2 class="group-header">新裝置怎麼加入</h2>
+      <ul class="group">
+        <li class="cell"><span class="cell-label">1. 先在資料最完整的那台（通常是手機）打開同步</span></li>
+        <li class="cell"><span class="cell-label">2. 在新裝置打開 Beamup，到「設定 › 筆記」填同樣的 Folio 網址和同步密碼</span></li>
+        <li class="cell"><span class="cell-label">3. 回到這裡打開「跨裝置同步」，資料就會出現</span></li>
+      </ul>
+      <p class="group-footer">新裝置上原本就有的資料會合併進來，不會被清掉。主畫面的 Beamup 和 Safari 裡的 Beamup 算兩台，各自要打開一次。</p>`
+  );
+  byId('cloudOn').addEventListener('change', async (e) => {
+    const on = e.target.checked;
+    const p = cloud.setEnabled(on);
+    rerender(viewSettingsDevices);
+    if (!on) return toast('已關閉跨裝置同步');
+    try {
+      await p;
+      toast('同步完成');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+    if (location.hash === '#/settings/devices') rerender(viewSettingsDevices);
+  });
+  byId('cloudNow')?.addEventListener('click', async () => {
+    try {
+      await cloud.syncNow();
+      toast('同步完成');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+    rerender(viewSettingsDevices);
   });
 }
 
@@ -2310,6 +2376,7 @@ const routes = [
   [/^#\/appearance$/, viewAppearance],
   [/^#\/tags$/, viewTags],
   [/^#\/settings$/, viewSettings],
+  [/^#\/settings\/devices$/, viewSettingsDevices],
   [/^#\/settings\/todo$/, viewSettingsTodo],
   [/^#\/settings\/notes$/, viewSettingsNotes],
   [/^#\/settings\/calendar$/, viewSettingsCalendar],
@@ -2345,8 +2412,23 @@ function dailyVisit() {
   if (chip) chip.innerHTML = petChip();
 }
 
+// 別台裝置的變更進來後：重畫目前頁面。正在打字或開著選單時不動，免得吃掉輸入；編輯頁只更新狀態列
+const SAFE_TO_REDRAW = /^#\/?(todo\/list|notes\/list|events|pet|tags|settings(\/.*)?)?$/;
+function refreshAfterSync() {
+  applyTheme(settings().appearance);
+  const a = document.activeElement;
+  const typing = a && (a.matches('input, textarea, select') || a.isContentEditable);
+  if (typing || document.querySelector('.sheet-wrap, .alert-wrap')) return refreshCurrent?.();
+  if (!SAFE_TO_REDRAW.test(location.hash || '#/')) return refreshCurrent?.();
+  const y = window.scrollY;
+  render();
+  window.scrollTo(0, y);
+}
+
 async function start() {
   applyTheme(settings().appearance);
+  cloud.init({ getData: db, save, getSettings: settings, onChange: refreshAfterSync });
+  setOnSave(() => cloud.schedule());
   dailyVisit();
   // App 一直開著跨過午夜時，回到畫面也要算新的一天
   document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && dailyVisit());
@@ -2363,6 +2445,12 @@ async function start() {
   render();
   retryPending();
   window.addEventListener('online', retryPending);
+  // 跨裝置同步：打開時、回到畫面時、開著的時候每 30 秒拿一次別台的變更
+  const pull = () => cloud.syncNow().catch(() => {});
+  pull();
+  window.addEventListener('online', pull);
+  document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && pull());
+  setInterval(() => document.visibilityState === 'visible' && pull(), 30_000);
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
 }
 

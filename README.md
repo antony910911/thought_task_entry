@@ -152,6 +152,16 @@ Folio 是你的另一個筆記 App（repo `folio`）。Beamup 的筆記會直接
 
 設定了 Folio 之後，筆記就不會再送到 OneNote。
 
+### 跨裝置同步（手機、電腦共用同一份資料）
+
+Beamup 的資料平常只存在每個瀏覽器自己裡面。打開 **設定 › 跨裝置同步** 後，待辦、筆記、行程、標籤、外星人和設定會存到上面那個 Folio 同步伺服器（紀錄 key 以 `bu:` 開頭，Folio App 會略過），每台打開同步的裝置會自動互相更新：打開 App、回到畫面、有變動時，以及開著時每 30 秒。
+
+1. 先在資料最完整的那台（通常是手機）打開同步。
+2. 新裝置：填好同樣的 Folio 網址和同步密碼，再打開「跨裝置同步」。原本就有的資料會合併進來。
+3. 主畫面的 Beamup 和 Safari 裡的 Beamup 算兩台，各自要打開一次。
+
+兩台都改了同一筆時，後同步的那台的版本會留下來。
+
 ## 3-1. （選用）筆記送到 OneNote（公司帳號）
 
 App 透過 Microsoft 官方的 Microsoft Graph API 在你選定的分區建立頁面。頁面格式如下：
@@ -268,10 +278,11 @@ js/sync/todo.js        待辦同步（Mothership 連接碼或 Webhook）
 js/sync/microsoft.js   Microsoft 登入（PKCE）、OneNote、Outlook
 js/sync/calendar.js    iOS 捷徑網址、.ics 產生
 js/sync/folio.js       筆記送到 Folio（Folio 的 /api/changes）
+js/sync/cloud.js       跨裝置同步（存在 Folio 的同步伺服器，key 以 bu: 開頭）
 tests/                 單元測試（node --test）
 ```
 
 ## 注意
-- 資料存在 Safari 網站資料裡。iOS 在 App 長期沒開時可能會清除，請偶爾到「設定 › 匯出備份」存一份。
+- 資料存在 Safari 網站資料裡。iOS 在 App 長期沒開時可能會清除：打開跨裝置同步就有一份在雲端，否則請偶爾到「設定 › 匯出備份」存一份。
 - 刪除筆記不會刪掉 OneNote 頁面；修改已送出的筆記，要再送一次（會建立新頁面）。
 - 修改程式後，手機會在下次開啟時於背景下載新版，再下一次開啟才會套用。
