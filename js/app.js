@@ -1929,6 +1929,7 @@ function viewSettings() {
         </li>
         <li><button class="cell action tap" id="folioPing">測試連線</button></li>
       </ul>
+      <p class="group-footer" id="folioStatus" hidden></p>
       <p class="group-footer">筆記會送到 Folio 的「Beamup › 收件匣」，一篇筆記一頁。修改後再送會更新同一頁，在 Beamup 刪除也會一起刪掉。設定了 Folio 就不會送到 OneNote。</p>
 
       <h2 class="group-header">Microsoft 帳號（${s.calendar.mode === 'outlook' ? 'Outlook 行事曆・' : ''}OneNote，選用）</h2>
@@ -2054,11 +2055,18 @@ function viewSettings() {
   bindField('folioToken', s.folio, 'token');
   $('folioPing').addEventListener('click', async () => {
     if (!folio.isConfigured(s)) return toast('請先填 Folio 網址和同步密碼', 'error');
+    const out = $('folioStatus');
+    out.hidden = false;
+    out.style.color = '';
+    out.textContent = `正在連線 ${folio.baseUrl(s)} …`;
     try {
       const n = await folio.ping(s);
+      out.textContent = `✓ 連線成功：${folio.baseUrl(s)}（Folio 裡有 ${n} 筆資料）`;
       toast(`連線成功（Folio 裡有 ${n} 筆資料）`);
     } catch (e) {
-      toast(e.message, 'error');
+      out.style.color = 'var(--danger)';
+      out.textContent = e.message;
+      toast('連線失敗，原因寫在按鈕下方', 'error');
     }
   });
   bindField('clientId', s.microsoft, 'clientId');

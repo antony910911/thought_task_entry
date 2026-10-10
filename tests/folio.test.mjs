@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { noteHtml, noteRecords, pageTitle, makeRev, FOLIO_NOTEBOOK, FOLIO_SECTION, baseUrl } from '../js/sync/folio.js';
+import { noteHtml, noteRecords, pageTitle, makeRev, FOLIO_NOTEBOOK, FOLIO_SECTION, baseUrl, ping } from '../js/sync/folio.js';
 
 test('頁面標題把標籤放前面', () => {
   assert.equal(pageTitle({ title: '週會', tags: ['會議', '專案A'] }), '[會議][專案A] 週會');
@@ -34,4 +34,25 @@ test('版本號越來越大（同一毫秒也一樣）', () => {
 
 test('網址自動補 https、去掉結尾斜線', () => {
   assert.equal(baseUrl({ folio: { url: 'folio.me.workers.dev/' } }), 'https://folio.me.workers.dev');
+  assert.equal(baseUrl({ folio: { url: ' https://folio.me.workers.dev/index.html#/nb ' } }), 'https://folio.me.workers.dev');
+});
+
+test('連線錯誤分清楚：沒設 SYNC_TOKEN、密碼錯、Cloudflare 暫時 503、網址不是 Folio', async () => {
+  const s = { folio: { url: 'folio.me.workers.dev', token: 'abc' } };
+  const reply = (status, body, type = 'application/json') => async () => new Response(body, { status, headers: { 'Content-Type': type } });
+  const real = globalThis.fetch;
+  try {
+    globalThis.fetch = reply(503, '{"error":"not_configured"}');
+    await assert.rejects(ping(s), /讀不到 SYNC_TOKEN/);
+    globalThis.fetch = reply(401, '{"error":"unauthorized"}');
+    await assert.rejects(ping(s), /同步密碼不對/);
+    globalThis.fetch = reply(503, 'Service Unavailable', 'text/plain');
+    await assert.rejects(ping(s), /回應 503，請稍後再試/);
+    globalThis.fetch = reply(200, '<!doctype html><html></html>', 'text/html');
+    await assert.rejects(ping(s), /不是 Folio/);
+    globalThis.fetch = reply(200, '{"records":7}');
+    assert.equal(await ping(s), 7);
+  } finally {
+    globalThis.fetch = real;
+  }
 });

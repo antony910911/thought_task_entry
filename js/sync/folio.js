@@ -27,10 +27,16 @@ export function isConfigured(settings) {
   return Boolean(settings.folio && settings.folio.url && settings.folio.token);
 }
 
+/** 只留下網址的「https://主機」部分：貼成 …/index.html、…/#/xxx 或結尾有斜線都沒關係 */
 export function baseUrl(settings) {
-  let u = String(settings.folio.url || '').trim().replace(/\/+$/, '');
-  if (u && !/^https?:\/\//.test(u)) u = 'https://' + u;
-  return u;
+  let u = String(settings.folio.url || '').trim();
+  if (!u) return '';
+  if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+  try {
+    return new URL(u).origin;
+  } catch {
+    return u.replace(/\/+$/, '');
+  }
 }
 
 function randomId(prefix) {
@@ -133,11 +139,19 @@ async function api(settings, path, body) {
   } catch {
     throw new Error('連不到 Folio（網址不對，或離線）');
   }
-  if (res.status === 401) throw new Error('Folio 同步密碼不對');
-  if (res.status === 503) throw new Error('Folio 還沒設定同步密碼（Cloudflare 的 SYNC_TOKEN）');
-  if (res.status === 404) throw new Error('這個網址不是 Folio（找不到同步伺服器）');
-  if (!res.ok) throw new Error(`Folio 回應 ${res.status}`);
-  return res.json();
+  let data = null;
+  try {
+    data = await res.clone().json();
+  } catch {}
+  const code = data && data.error;
+  const host = url.replace(/^https?:\/\//, '');
+  if (res.status === 401 || code === 'unauthorized') throw new Error('Folio 同步密碼不對（要跟 Cloudflare 上的 SYNC_TOKEN 一模一樣）');
+  // 只有 Folio 伺服器自己說「沒設定」才是 SYNC_TOKEN 的問題；其他 503 是 Cloudflare 暫時出錯
+  if (code === 'not_configured')
+    throw new Error(`${host} 這個 Worker 執行時讀不到 SYNC_TOKEN：請到 Cloudflare › 這個 Worker › Settings › Variables and Secrets 新增，類型選 Secret`);
+  if (res.status === 404 || (res.ok && !data)) throw new Error(`${host} 不是 Folio（找不到同步伺服器），請檢查網址`);
+  if (!res.ok) throw new Error(`Folio 回應 ${res.status}${code ? `（${code}）` : ''}，請稍後再試`);
+  return data;
 }
 
 /** 測試連線，回傳 Folio 裡有幾筆資料 */
