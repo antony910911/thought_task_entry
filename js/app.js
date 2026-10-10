@@ -307,11 +307,25 @@ async function retryPending() {
   if (todoSync.isConfigured(settings())) for (const t of todos) await syncTodo(t);
   const notes = db().notes.filter((n) => n.sync && ['pending', 'error'].includes(n.sync.status));
   if (noteReady()) for (const n of notes) await syncNote(n);
+  // 送 Mothership 失敗（例如離線）的行程：重送
+  if (settings().calendar.mode === 'mothership' && todoSync.mothershipReady(settings())) {
+    const events = db().events.filter((r) => r.sync && ['pending', 'error'].includes(r.sync.status));
+    for (const r of events) {
+      try {
+        await todoSync.sendEvent(r, r.sync.via === 'mothership' && r.sync.at ? 'event.updated' : 'event.created', settings());
+        r.sync = { status: 'ok', at: new Date().toISOString(), via: 'mothership' };
+      } catch (e) {
+        r.sync = { ...r.sync, status: 'error', error: e.message };
+      }
+      save();
+    }
+  }
 }
 
 function pendingCount() {
   const bad = (x) => x.sync && ['pending', 'error'].includes(x.sync.status);
-  return db().todos.filter(bad).length + db().notes.filter(bad).length;
+  const events = settings().calendar.mode === 'mothership' ? db().events.filter(bad).length : 0;
+  return db().todos.filter(bad).length + db().notes.filter(bad).length + events;
 }
 
 // ---------- 待辦：共用列 ----------
@@ -1324,6 +1338,7 @@ const MODE_TEXT = {
   shortcut: (s) => `透過捷徑「${s.shortcutName}」寫入 iPhone 行事曆`,
   ics: () => '開啟 iPhone「加入行事曆」畫面',
   outlook: () => '寫入公司 Outlook 行事曆',
+  mothership: () => '送到 Mothership，寫進它連接的行事曆',
 };
 
 function datebox(d, mini = false) {
@@ -1339,7 +1354,14 @@ const toEvent = (r) => ({ ...r, start: new Date(r.start), end: new Date(r.end), 
 async function deliverEvent(ev, record, onChange = () => {}) {
   const cfg = settings().calendar;
   try {
-    if (cfg.mode === 'outlook') {
+    if (cfg.mode === 'mothership') {
+      record.sync = { ...record.sync, status: 'pending' };
+      onChange();
+      const update = ev.replace && record.sync && record.sync.via === 'mothership';
+      await todoSync.sendEvent(record, update ? 'event.updated' : 'event.created', settings());
+      record.sync = { status: 'ok', at: new Date().toISOString(), via: 'mothership' };
+      toast(update ? '已更新，Mothership 會改到行事曆' : '已送到 Mothership，稍後出現在行事曆');
+    } else if (cfg.mode === 'outlook') {
       record.sync = { ...record.sync, status: 'pending' };
       onChange();
       const remoteId =
@@ -1505,7 +1527,7 @@ function viewEvents() {
       });
       save();
       deliverEvent(ev, record, renderHistory).then((s) => {
-        if (s.status === 'ok' && cfg.mode !== 'outlook') toast('已送出新的時間；行事曆裡舊的那筆請記得刪除');
+        if (s.status === 'ok' && cfg.mode !== 'outlook' && cfg.mode !== 'mothership') toast('已送出新的時間；行事曆裡舊的那筆請記得刪除');
       });
       setEditing(null);
     } else addEvent(ev, text, renderHistory);
@@ -1538,9 +1560,22 @@ function viewEvents() {
         { label: '修改', run: () => setEditing(record) },
         { label: '再加入一次行事曆', run: () => deliverEvent(toEvent(record), record, renderHistory) },
         {
-          label: record.sync && record.sync.via === 'outlook' ? '刪除（Outlook 行事曆也一起刪）' : '刪除紀錄（行事曆裡的要手動刪）',
+          label:
+            record.sync && record.sync.via === 'outlook'
+              ? '刪除（Outlook 行事曆也一起刪）'
+              : record.sync && record.sync.via === 'mothership'
+                ? '刪除（Mothership 和行事曆也一起刪）'
+                : '刪除紀錄（行事曆裡的要手動刪）',
           danger: true,
           run: async () => {
+            if (record.sync && record.sync.via === 'mothership') {
+              try {
+                await todoSync.sendEvent(record, 'event.deleted', settings());
+                toast('已從 Mothership 和行事曆刪除');
+              } catch (e) {
+                return toast(`刪除失敗：${e.message}`, 'error');
+              }
+            }
             if (record.sync && record.sync.via === 'outlook' && record.sync.remoteId) {
               try {
                 await ms.deleteOutlookEvent(record.sync.remoteId, settings());
@@ -1852,6 +1887,7 @@ function viewSettings() {
     ['shortcut', 'iOS 捷徑', '一鍵寫入 iPhone 行事曆（推薦）'],
     ['ics', '行事曆檔案', '免設定，每次需再按「加入」'],
     ['outlook', '公司 Outlook', '用 Microsoft 帳號寫入，會同步到 iPhone'],
+    ['mothership', 'Mothership', '送到 Mothership，自動寫進它連接的 iCloud／Google／Outlook，修改刪除也會跟著'],
   ];
 
   $app.innerHTML = `
@@ -1871,7 +1907,7 @@ function viewSettings() {
       <ul class="group icons">
         <li class="cell">
           <span class="cell-icon" style="${featureVars('todo')}">${icon('link')}</span>
-          <label class="cell-label field"><span>Arbor 連接碼或 Webhook 網址</span><input id="webhookUrl" type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="pm1.… 或 https://…/api/todos" value="${esc(s.todo.webhookUrl)}"></label>
+          <label class="cell-label field"><span>Mothership 連接碼或 Webhook 網址</span><input id="webhookUrl" type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="pm1.… 或 https://…/api/todos" value="${esc(s.todo.webhookUrl)}"></label>
         </li>
         <li class="cell">
           <span class="cell-icon" style="--c: var(--gray)">${icon('key')}</span>
@@ -1879,7 +1915,7 @@ function viewSettings() {
         </li>
         <li><button class="cell action tap" id="ping">測試連線</button></li>
       </ul>
-      <p class="group-footer">貼上 Arbor「外觀 › 連接 Beamup」的連接碼，新增的待辦就會直接進 Arbor 上方的「待辦」清單（高優先進「急件」），修改、勾選完成也會同步。用 Webhook 時會 POST 一份 JSON 到這個網址，格式請見 README；Token 只有 Webhook 會用到。</p>
+      <p class="group-footer">貼上 Mothership「設定 › Beamup」的連接碼，新增的待辦就會直接進 Mothership 上方的「待辦」清單（高優先進「急件」），修改、勾選完成也會同步。用 Webhook 時會 POST 一份 JSON 到這個網址，格式請見 README；Token 只有 Webhook 會用到。</p>
 
       <h2 class="group-header">筆記 → Folio</h2>
       <ul class="group icons">
@@ -2106,6 +2142,8 @@ function viewSettings() {
     save();
     if (s.calendar.mode === 'outlook' && before !== 'outlook' && ms.isSignedIn())
       toast('需要行事曆權限：請登出後重新登入一次', 'error');
+    if (s.calendar.mode === 'mothership' && !todoSync.mothershipReady(s))
+      toast('還要在上面「待辦事項 → 專案管理工具」貼上 Mothership 連接碼', 'error');
     const y = window.scrollY;
     viewSettings();
     window.scrollTo(0, y);

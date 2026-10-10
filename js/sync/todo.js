@@ -1,5 +1,5 @@
 // 把待辦事項 POST 到你自己的專案管理工具（Webhook）。格式見 README「待辦事項 Webhook 格式」。
-// 「網址」欄也可以貼 Arbor 的連接碼（pm1. 開頭），待辦會直接進 Arbor 上方的「待辦」清單。
+// 「網址」欄也可以貼 Mothership 的連接碼（pm1. 開頭），待辦會直接進 Mothership 上方的「待辦」清單。
 
 export function isConfigured(settings) {
   return Boolean(settings.todo.webhookUrl);
@@ -28,7 +28,7 @@ export function payloadFor(todo, type = 'todo.created') {
 }
 
 /**
- * Arbor 連接碼："pm1." + base64url(JSON {u: Supabase 網址, k: 公開金鑰, s: 你的私密碼})。
+ * Mothership 連接碼："pm1." + base64url(JSON {u: Supabase 網址, k: 公開金鑰, s: 你的私密碼})。
  * 不是連接碼就回傳 null。
  */
 export function parseConnectionCode(text) {
@@ -44,7 +44,7 @@ export function parseConnectionCode(text) {
   }
 }
 
-/** 送到 Arbor（Supabase 的 inbox_push 函式，見 Arbor 的 supabase/inbox.sql） */
+/** 送到 Mothership（Supabase 的 inbox_push 函式，見 Mothership 的 supabase/inbox.sql） */
 async function postToProjectManager(pm, payload) {
   let res;
   try {
@@ -54,7 +54,7 @@ async function postToProjectManager(pm, payload) {
       body: JSON.stringify({ p_key: pm.secret, p_item: payload }),
     });
   } catch {
-    throw new Error('連不到 Arbor（離線？）');
+    throw new Error('連不到 Mothership（離線？）');
   }
   if (res.ok) return res;
   let msg = '';
@@ -63,9 +63,9 @@ async function postToProjectManager(pm, payload) {
   } catch {
     // 沒有內容
   }
-  if (/invalid connection code/.test(msg)) throw new Error('連接碼已失效，請到 Arbor 重新複製');
-  if (res.status === 404) throw new Error('Arbor 還沒設定好（要先在 Supabase 執行 inbox.sql）');
-  throw new Error(`Arbor 回應 ${res.status}${msg ? '：' + msg : ''}`);
+  if (/invalid connection code/.test(msg)) throw new Error('連接碼已失效，請到 Mothership 重新複製');
+  if (res.status === 404) throw new Error('Mothership 還沒設定好（要先在 Supabase 執行 inbox.sql）');
+  throw new Error(`Mothership 回應 ${res.status}${msg ? '：' + msg : ''}`);
 }
 
 async function post(settings, payload) {
@@ -82,6 +82,33 @@ async function post(settings, payload) {
   }
   if (!res.ok) throw new Error(`伺服器回應 ${res.status}`);
   return res;
+}
+
+/** 行程模式選「Mothership」時需要設定好連接碼 */
+export function mothershipReady(settings) {
+  return Boolean(parseConnectionCode(settings.todo.webhookUrl));
+}
+
+/**
+ * 把行程送到 Mothership：變成「行事曆」清單的卡片，再由 Mothership 寫進它連接的行事曆（iCloud／Google／Outlook）。
+ * @param {'event.created'|'event.updated'|'event.deleted'} type
+ */
+export async function sendEvent(record, type, settings) {
+  const pm = parseConnectionCode(settings.todo.webhookUrl);
+  if (!pm) throw new Error('請先在設定貼上 Mothership 連接碼');
+  const notes = [record.location ? '@' + record.location : '', record.notes, (record.tags || []).map((t) => '#' + t).join(' ')]
+    .filter(Boolean)
+    .join('\n');
+  await postToProjectManager(pm, {
+    type,
+    id: record.id,
+    title: record.title,
+    notes,
+    allDay: Boolean(record.allDay),
+    start: new Date(record.start).toISOString(),
+    end: new Date(record.end).toISOString(),
+    source: 'beamup',
+  });
 }
 
 /** 測試連線：送出 {"type":"ping"}，伺服器回 2xx 即成功 */
