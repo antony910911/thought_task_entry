@@ -126,3 +126,123 @@ export async function sendTodo(todo, settings, type = 'todo.created') {
     return null;
   }
 }
+
+// ---------- Mothership → Beamup：在 Mothership 刪除、完成、改名、改日期，Beamup 也跟著 ----------
+
+/** 拿 Mothership 上「從 Beamup 來的卡片」現況（Supabase 的 beamup_pull，見 Mothership supabase/inbox.sql） */
+export async function pullFromMothership(settings) {
+  const pm = parseConnectionCode(settings.todo.webhookUrl);
+  if (!pm) return null;
+  let res;
+  try {
+    res = await fetch(`${pm.url}/rest/v1/rpc/beamup_pull`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: pm.key, Authorization: `Bearer ${pm.key}` },
+      body: JSON.stringify({ p_key: pm.secret }),
+    });
+  } catch {
+    return null; // 離線：下次再拿
+  }
+  // 404：Mothership 那邊還沒重跑 inbox.sql，先不跟
+  if (!res.ok) return null;
+  const body = await res.json().catch(() => null);
+  return body && Array.isArray(body.cards) ? body : null;
+}
+
+/** YYYY-MM-DD + HH:MM，當地時間 */
+const at = (day, time = '00:00') => new Date(`${day}T${time}`);
+
+/** 卡片上的日期／時段換回行程的開始、結束（全天行程的結束是最後一天的隔天 0 點） */
+export function eventTimes(card) {
+  const last = card.dueDate;
+  if (!last) return null;
+  const first = card.startDate || last;
+  const m = /^(\d\d:\d\d)\D+(\d\d:\d\d)$/.exec(card.time || '');
+  if (m) {
+    const start = at(first, m[1]);
+    let end = at(last, m[2]);
+    if (end < start) end = new Date(end.getTime() + 86400000);
+    return { allDay: false, start, end };
+  }
+  const end = at(last);
+  end.setDate(end.getDate() + 1);
+  return { allDay: true, start: at(first), end };
+}
+
+const fingerprint = (c) => JSON.stringify([c.title, c.startDate, c.dueDate, c.time || null, Boolean(c.completed)]);
+const busy = (x, now) =>
+  (x.sync && ['pending', 'error'].includes(x.sync.status)) || (x.updatedAt && now - Date.parse(x.updatedAt) < 2 * 60_000);
+
+/**
+ * 把 Mothership 的變更套到 Beamup 的待辦與行程（只動送去 Mothership 的那些）。回傳 { changed, deleted, touched }。
+ * - 在 Mothership 刪掉（在它的垃圾桶裡）→ Beamup 也刪掉，不再通知 Mothership。
+ * - 完成、改標題、改日期／時間 → Beamup 跟著改。行程的完成不管。
+ * - Beamup 這邊剛改、還沒送到的，以 Beamup 為準。
+ * 每筆記著上次看到的卡片（remote），只有卡片真的變了才套用，避免把 Beamup 剛送出、Mothership 還沒收的修改改回去。
+ */
+export function applyMothership(data, remote, now = Date.now()) {
+  const cards = new Map(remote.cards.map((c) => [c.sourceId, c]));
+  const deleted = new Set(remote.deleted || []);
+  const pending = new Set(remote.pending || []);
+  // touched：有記下新的卡片狀態（要存檔），changed／deleted：真的改到或刪掉幾筆
+  const result = { changed: 0, deleted: 0, touched: false };
+  const stamp = new Date(now).toISOString();
+
+  const follow = (item, key, apply) => {
+    if (pending.has(item.id)) return 'keep';
+    const card = cards.get(key);
+    if (!card) return deleted.has(key) && !busy(item, now) ? 'delete' : 'keep';
+    const fp = fingerprint(card);
+    const seen = item.remote && item.remote.fp;
+    if (seen === fp || busy(item, now)) return 'keep';
+    item.remote = { fp };
+    result.touched = true;
+    if (apply(card)) {
+      item.updatedAt = stamp;
+      result.changed++;
+    }
+    return 'keep';
+  };
+
+  data.todos = data.todos.filter((t) => {
+    if (!t.sync || !t.sync.at) return true; // 沒送過 Mothership
+    const verdict = follow(t, t.id, (c) => {
+      const due = typeof c.dueDate === 'string' ? c.dueDate : null;
+      const done = Boolean(c.completed);
+      if (t.title === c.title && (t.due || null) === due && Boolean(t.done) === done) return false;
+      t.title = c.title;
+      t.due = due;
+      if (Boolean(t.done) !== done) {
+        t.done = done;
+        t.doneAt = done ? stamp : null;
+      }
+      return true;
+    });
+    if (verdict === 'delete') result.deleted++;
+    return verdict !== 'delete';
+  });
+  if (result.deleted) result.touched = true;
+
+  data.events = data.events.filter((r) => {
+    if (!r.sync || r.sync.via !== 'mothership') return true;
+    const verdict = follow(r, 'ev:' + r.id, (c) => {
+      const t = eventTimes(c);
+      if (!t) return false;
+      const same =
+        r.title === c.title &&
+        Boolean(r.allDay) === t.allDay &&
+        Date.parse(r.start) === t.start.getTime() &&
+        Date.parse(r.end) === t.end.getTime();
+      if (same) return false;
+      r.title = c.title;
+      r.allDay = t.allDay;
+      r.start = t.start.toISOString();
+      r.end = t.end.toISOString();
+      return true;
+    });
+    if (verdict === 'delete') result.deleted++;
+    return verdict !== 'delete';
+  });
+  if (result.deleted) result.touched = true;
+  return result;
+}

@@ -203,6 +203,8 @@ App 透過 Microsoft 官方的 Microsoft Graph API 在你選定的分區建立�
 
 之後新增的待辦會直接變成 Mothership 雙層模式上方「待辦」清單的卡片（高優先進「急件」），修改、勾選完成也會同步。Token 欄位不用填。
 
+反過來也會跟：在 Mothership 刪除（進垃圾桶）、勾選完成、改標題或到期日，Beamup 打開或切回來時（開著的時候每 30 秒）也會照著改；行程改名、改時間或刪除也一樣。Beamup 這邊剛改、還沒送到的，以 Beamup 為準。需要 Mothership 的 `supabase/inbox.sql` 是 2026/10 之後的版本（有 `beamup_pull`），舊的話重跑一次即可。
+
 ### 送到自己的伺服器（Webhook）
 
 到「設定 › 待辦」填入 **Webhook 網址**，以及選填的 Token。待辦有變動時，App 會送出：

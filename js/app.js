@@ -388,6 +388,27 @@ async function retryPending() {
   }
 }
 
+let following = false;
+/** 在 Mothership 刪除、完成、改名、改日期的待辦和行程，Beamup 也跟著改 */
+async function followMothership() {
+  if (following || !todoSync.mothershipReady(settings())) return;
+  following = true;
+  try {
+    const remote = await todoSync.pullFromMothership(settings());
+    if (!remote) return;
+    const r = todoSync.applyMothership(db(), remote);
+    if (!r.touched) return;
+    save();
+    if (r.changed || r.deleted) {
+      refreshAfterSync();
+      const parts = [r.changed && `更新 ${r.changed} 筆`, r.deleted && `刪除 ${r.deleted} 筆`].filter(Boolean);
+      toast(`已跟上 Mothership：${parts.join('、')}`);
+    }
+  } finally {
+    following = false;
+  }
+}
+
 function pendingCount() {
   const bad = (x) => x.sync && ['pending', 'error'].includes(x.sync.status);
   const events = settings().calendar.mode === 'mothership' ? db().events.filter(bad).length : 0;
@@ -2543,6 +2564,7 @@ async function start() {
   const pull = () => {
     flushOutbox();
     cloud.syncNow().catch(() => {});
+    followMothership();
   };
   pull();
   window.addEventListener('online', pull);
