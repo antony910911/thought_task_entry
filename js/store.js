@@ -24,6 +24,7 @@ const DEFAULTS = {
     todo: { webhookUrl: '', token: '' },
     microsoft: { clientId: '', tenant: 'organizations' },
     onenote: { sectionId: '', sectionName: '' },
+    folio: { url: '', token: '' },
     calendar: { mode: 'shortcut', shortcutName: '加入行程', defaultDuration: 60 },
     appearance: { theme: 'classic', mode: 'auto', alien: 'blip' },
     reminders: { enabled: false, shortcutName: '加入提醒', time: '09:00' },

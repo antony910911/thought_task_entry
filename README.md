@@ -136,7 +136,21 @@ npm test           # 行程語句解析的單元測試
 
 ---
 
-## 3. 筆記：自動送到 OneNote（公司帳號）
+## 3. 筆記：送到 Folio
+
+Folio 是你的另一個筆記 App（repo `folio`）。Beamup 的筆記會直接送進 Folio 的雲端同步，打開 Folio 就看得到：
+
+1. Folio 要先部署好，並且已經設定跨裝置同步（Cloudflare 的 `SYNC_TOKEN`，見 Folio 的 README）。
+2. Beamup → **設定 › 筆記 → Folio**：填 **Folio 網址**（例如 `https://folio.xxx.workers.dev`）和**同步密碼**（就是 `SYNC_TOKEN`），按「測試連線」。
+3. 之後寫筆記按「送到 Folio」，或在首頁萬用輸入框送出筆記，就會出現在 Folio 的 **Beamup › 收件匣**：
+   - 一篇筆記一頁，標題前面加上 `[標籤]`，第一行列出 `#標籤`。
+   - 內文的 `- [ ] 事項`、`- [x] 事項` 會變成 Folio 的勾選清單。
+   - 修改後再送會**更新同一頁**；在 Beamup 刪除筆記，Folio 那頁也會一起刪。
+   - 「Beamup」筆記本和「收件匣」分區可以在 Folio 裡改名，Beamup 不會改回來。
+
+設定了 Folio 之後，筆記就不會再送到 OneNote。
+
+## 3-1. （選用）筆記送到 OneNote（公司帳號）
 
 App 透過 Microsoft 官方的 Microsoft Graph API 在你選定的分區建立頁面。頁面格式如下：
 - 標題：`[會議][專案A] 會議記錄`
@@ -251,6 +265,7 @@ js/parser.js           行程語句解析
 js/sync/todo.js        待辦同步（Arbor 連接碼或 Webhook）
 js/sync/microsoft.js   Microsoft 登入（PKCE）、OneNote、Outlook
 js/sync/calendar.js    iOS 捷徑網址、.ics 產生
+js/sync/folio.js       筆記送到 Folio（Folio 的 /api/changes）
 tests/                 單元測試（node --test）
 ```
 

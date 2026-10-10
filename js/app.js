@@ -9,6 +9,7 @@ import { ALIENS, character } from './aliens.js';
 import * as todoSync from './sync/todo.js';
 import * as ms from './sync/microsoft.js';
 import * as cal from './sync/calendar.js';
+import * as folio from './sync/folio.js';
 
 const $app = document.getElementById('app');
 const DRAFT_KEY = 'tte.noteDraft';
@@ -212,6 +213,10 @@ function autosize(el, min = 0) {
 // ---------- 同步 ----------
 
 const onenoteReady = () => ms.isSignedIn() && Boolean(settings().onenote.sectionId);
+/** 筆記要送去哪：有設定 Folio 就送 Folio，不然才是 OneNote */
+const noteTarget = () => (folio.isConfigured(settings()) ? 'folio' : onenoteReady() ? 'onenote' : null);
+const noteReady = () => Boolean(noteTarget());
+const targetName = (t = noteTarget()) => (t === 'onenote' ? 'OneNote' : 'Folio');
 
 /** 送到專案管理工具：沒送過就是「新增」，送過了就是「更新」（改內容、勾選完成都算） */
 async function syncTodo(todo) {
@@ -273,15 +278,23 @@ function reward(kind, text) {
 const pick = (list) => list[Math.floor(Math.random() * list.length)];
 
 async function syncNote(note) {
-  note.sync = { status: 'pending' };
+  const prev = note.sync || {};
+  const target = noteTarget();
+  note.sync = { ...prev, status: 'pending', error: undefined };
   save();
   refreshCurrent?.();
   try {
-    const page = await ms.createOneNotePage(note, settings());
-    note.sync = { status: 'ok', at: new Date().toISOString(), remoteId: page.id, url: page.url };
+    if (target === 'folio') {
+      // Folio：送過的會更新同一頁
+      const ids = await folio.sendNote({ ...note, sync: prev }, settings());
+      note.sync = { status: 'ok', at: new Date().toISOString(), via: 'folio', folio: ids, url: folio.baseUrl(settings()) };
+    } else {
+      const page = await ms.createOneNotePage(note, settings());
+      note.sync = { status: 'ok', at: new Date().toISOString(), via: 'onenote', remoteId: page.id, url: page.url };
+    }
     note.editedAfterSync = false;
   } catch (e) {
-    note.sync = { status: 'error', error: e.message };
+    note.sync = { ...prev, status: 'error', error: e.message };
   }
   save();
   refreshCurrent?.();
@@ -293,7 +306,7 @@ async function retryPending() {
   const todos = db().todos.filter((t) => t.sync && ['pending', 'error'].includes(t.sync.status));
   if (todoSync.isConfigured(settings())) for (const t of todos) await syncTodo(t);
   const notes = db().notes.filter((n) => n.sync && ['pending', 'error'].includes(n.sync.status));
-  if (onenoteReady()) for (const n of notes) await syncNote(n);
+  if (noteReady()) for (const n of notes) await syncNote(n);
 }
 
 function pendingCount() {
@@ -424,7 +437,7 @@ function bindCapture(refreshHome) {
       hint.textContent = `會新增待辦：${result.title}${due ? ` · 截止 ${due.text}` : ''}${result.priority === 'high' ? ' · 高優先' : ''}${tagText}`;
       hint.className = 'capture-hint';
     } else {
-      hint.textContent = `會存成筆記${result.title ? `「${result.title}」` : ''}${tagText}${onenoteReady() ? ' · 自動送到 OneNote' : ''}`;
+      hint.textContent = `會存成筆記${result.title ? `「${result.title}」` : ''}${tagText}${noteReady() ? ` · 自動送到 ${targetName()}` : ''}`;
       hint.className = 'capture-hint';
     }
   };
@@ -469,8 +482,10 @@ function bindCapture(refreshHome) {
       db().notes.push(note);
       save();
       reward('note.add', pick(['筆記收到！', '記下來了！']));
-      if (onenoteReady())
-        syncNote(note).then((s) => toast(s.status === 'ok' ? '筆記已送到 OneNote' : `筆記已存，OneNote 送出失敗：${s.error}`, s.status === 'ok' ? 'ok' : 'error'));
+      if (noteReady()) {
+        const name = targetName();
+        syncNote(note).then((s) => toast(s.status === 'ok' ? `筆記已送到 ${name}` : `筆記已存，${name} 送出失敗：${s.error}`, s.status === 'ok' ? 'ok' : 'error'));
+      }
       else toast('已存成筆記');
     } else {
       addEvent(r.event, r.text, () => {});
@@ -535,7 +550,7 @@ function viewHome() {
         </a>
         <a class="tile" href="#/notes" style="${featureVars('note')}">
           <div class="tile-head"><span class="tile-icon">${icon('note')}</span><span class="tile-count" id="noteCount">${db().notes.length}</span></div>
-          <div class="tile-name">筆記<small>${db().notes.length ? '寫下想法・送到 OneNote' : '開始第一篇筆記'}</small></div>
+          <div class="tile-name">筆記<small>${db().notes.length ? `寫下想法・送到 ${targetName()}` : '開始第一篇筆記'}</small></div>
         </a>
         <a class="tile wide" href="#/events" style="${featureVars('event')}">
           <div class="tile-head">
@@ -907,7 +922,9 @@ function viewNoteEditor(id) {
   }
   const note = existing || draft || { title: '', content: '', tags: [] };
   const tags = [...(note.tags || [])];
-  const ready = onenoteReady();
+  const ready = noteReady();
+  const tname = targetName();
+  const sentToFolio = existing && existing.sync && existing.sync.via === 'folio';
   const created = existing ? new Date(existing.createdAt) : new Date();
 
   $app.innerHTML = `
@@ -933,9 +950,9 @@ function viewNoteEditor(id) {
         ready
           ? `<button class="text-btn" id="saveOnly">只儲存</button>
              <span class="spacer"></span>
-             <button class="capsule primary" id="send">${icon('send')}送到 OneNote</button>`
-          : `<button class="icon-btn plain" id="share" aria-label="分享到 OneNote App">${icon('share')}</button>
-             <span class="spacer"><a href="#/settings">連結 OneNote 自動同步</a></span>
+             <button class="capsule primary" id="send">${icon('send')}${sentToFolio && tname === 'Folio' ? '更新到 Folio' : `送到 ${tname}`}</button>`
+          : `<button class="icon-btn plain" id="share" aria-label="分享">${icon('share')}</button>
+             <span class="spacer"><a href="#/settings">連結 Folio 自動同步</a></span>
              <button class="capsule primary" id="saveOnly">${icon('check')}儲存</button>`
       }
     </footer>`;
@@ -948,9 +965,9 @@ function viewNoteEditor(id) {
     const current = existing && db().notes.find((n) => n.id === existing.id);
     const s = current && current.sync;
     if (!s || s.status === 'off') return ($('status').innerHTML = '');
-    if (s.status === 'pending') return ($('status').innerHTML = `<p class="sync-pill">${icon('spinner', 'spin')}傳送到 OneNote…</p>`);
+    if (s.status === 'pending') return ($('status').innerHTML = `<p class="sync-pill">${icon('spinner', 'spin')}傳送到 ${tname}…</p>`);
     if (s.status === 'error') return ($('status').innerHTML = `<p class="sync-pill error">${icon('alert')}送出失敗：${esc(s.error)}</p>`);
-    $('status').innerHTML = `<p class="sync-pill ok">${icon('checkCircle')}已送到 OneNote · ${shortTime(s.at)}
+    $('status').innerHTML = `<p class="sync-pill ok">${icon('checkCircle')}已送到 ${s.via === 'folio' ? 'Folio' : 'OneNote'} · ${shortTime(s.at)}
       ${s.url ? `· <a href="${esc(s.url)}" target="_blank" rel="noopener">開啟</a>` : ''}
       ${current.editedAfterSync ? '· 之後有修改' : ''}</p>`;
   };
@@ -1088,7 +1105,7 @@ function viewNoteEditor(id) {
     btn.innerHTML = `${icon('spinner', 'spin')}傳送中`;
     const result = await syncNote(saved);
     if (result.status === 'ok') {
-      toast('已送到 OneNote');
+      toast(`已送到 ${tname}`);
       if (existing) location.hash = '#/notes/list';
       else if (/^#\/notes(\/new)?$/.test(location.hash)) viewNoteEditor(null); // 換成空白新筆記
       else location.hash = '#/notes/new';
@@ -1097,7 +1114,7 @@ function viewNoteEditor(id) {
       if (!existing) location.hash = `#/notes/edit/${saved.id}`;
       else {
         btn.disabled = false;
-        btn.innerHTML = `${icon('send')}送到 OneNote`;
+        btn.innerHTML = `${icon('send')}送到 ${tname}`;
       }
     }
   });
@@ -1112,27 +1129,36 @@ function viewNoteEditor(id) {
       } catch {}
     } else {
       await navigator.clipboard?.writeText(text);
-      toast('已複製，可貼到 OneNote');
+      toast('已複製');
     }
     if (!existing) location.hash = `#/notes/edit/${saved.id}`;
   });
 
   $('more')?.addEventListener('click', () => {
     const actions = [];
-    if (existing.sync && existing.sync.url) actions.push({ label: '在 OneNote 開啟', run: () => window.open(existing.sync.url, '_blank') });
-    if (ready && existing.sync && existing.sync.status === 'ok')
-      actions.push({ label: '再送一次（建立新頁面）', run: () => $('send').click() });
+    const via = existing.sync && existing.sync.status === 'ok' ? existing.sync.via : null;
+    if (existing.sync && existing.sync.url)
+      actions.push({ label: `在 ${via === 'folio' ? 'Folio' : 'OneNote'} 開啟`, run: () => window.open(existing.sync.url, '_blank') });
+    if (ready && via && via !== 'folio') actions.push({ label: '再送一次（建立新頁面）', run: () => $('send').click() });
+    const inFolio = existing.sync && existing.sync.via === 'folio' && existing.sync.folio && folio.isConfigured(settings());
     actions.push({
-      label: '刪除筆記',
+      label: inFolio ? '刪除筆記（Folio 那頁也一起刪）' : '刪除筆記',
       danger: true,
-      run: () => {
+      run: async () => {
+        if (inFolio) {
+          try {
+            await folio.deleteNote(existing.sync.folio, settings());
+          } catch (e) {
+            return toast(`刪除失敗：${e.message}`, 'error');
+          }
+        }
         db().notes = db().notes.filter((n) => n !== existing);
         save();
         toast('已刪除');
         location.hash = '#/notes/list';
       },
     });
-    sheet(actions, 'OneNote 上已送出的頁面不會被刪除');
+    sheet(actions, via === 'onenote' ? 'OneNote 上已送出的頁面不會被刪除' : '');
   });
 
   refreshCurrent = renderStatus;
@@ -1161,7 +1187,7 @@ function viewTags() {
     <main class="page" style="${featureVars('note')}">
       <h1 class="large-title">標籤</h1>
       <ul class="group icons" id="tagList"></ul>
-      <p class="group-footer">點標籤可以改名或刪除。改成已經存在的名稱，兩個標籤會合併。改名不會更新已經送到 OneNote 的頁面。</p>
+      <p class="group-footer">點標籤可以改名或刪除。改成已經存在的名稱，兩個標籤會合併。改名不會更新已經送出的筆記，重新送一次就會更新。</p>
     </main>`;
   const list = document.getElementById('tagList');
   const render = () => {
@@ -1855,7 +1881,21 @@ function viewSettings() {
       </ul>
       <p class="group-footer">貼上 Arbor「外觀 › 連接 Beamup」的連接碼，新增的待辦就會直接進 Arbor 上方的「待辦」清單（高優先進「急件」），修改、勾選完成也會同步。用 Webhook 時會 POST 一份 JSON 到這個網址，格式請見 README；Token 只有 Webhook 會用到。</p>
 
-      <h2 class="group-header">Microsoft 帳號（OneNote${s.calendar.mode === 'outlook' ? '・Outlook' : ''}）</h2>
+      <h2 class="group-header">筆記 → Folio</h2>
+      <ul class="group icons">
+        <li class="cell">
+          <span class="cell-icon" style="${featureVars('note')}">${icon('book')}</span>
+          <label class="cell-label field"><span>Folio 網址</span><input id="folioUrl" type="url" inputmode="url" placeholder="https://folio.xxx.workers.dev" autocomplete="off" value="${esc(s.folio.url)}"></label>
+        </li>
+        <li class="cell">
+          <span class="cell-icon" style="--c: var(--gray)">${icon('key')}</span>
+          <label class="cell-label field"><span>同步密碼（Folio 的 SYNC_TOKEN）</span><input id="folioToken" type="password" autocomplete="off" value="${esc(s.folio.token)}"></label>
+        </li>
+        <li><button class="cell action tap" id="folioPing">測試連線</button></li>
+      </ul>
+      <p class="group-footer">筆記會送到 Folio 的「Beamup › 收件匣」，一篇筆記一頁。修改後再送會更新同一頁，在 Beamup 刪除也會一起刪掉。設定了 Folio 就不會送到 OneNote。</p>
+
+      <h2 class="group-header">Microsoft 帳號（${s.calendar.mode === 'outlook' ? 'Outlook 行事曆・' : ''}OneNote，選用）</h2>
       <ul class="group icons">
         <li class="cell">
           <span class="cell-icon" style="--c: #0078D4">${icon('key')}</span>
@@ -1974,6 +2014,17 @@ function viewSettings() {
     });
   bindField('webhookUrl', s.todo, 'webhookUrl');
   bindField('token', s.todo, 'token');
+  bindField('folioUrl', s.folio, 'url');
+  bindField('folioToken', s.folio, 'token');
+  $('folioPing').addEventListener('click', async () => {
+    if (!folio.isConfigured(s)) return toast('請先填 Folio 網址和同步密碼', 'error');
+    try {
+      const n = await folio.ping(s);
+      toast(`連線成功（Folio 裡有 ${n} 筆資料）`);
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  });
   bindField('clientId', s.microsoft, 'clientId');
   bindField('tenant', s.microsoft, 'tenant');
   bindField('shortcutName', s.calendar, 'shortcutName');
@@ -2070,7 +2121,8 @@ function viewSettings() {
 
   $('export').addEventListener('click', () => {
     const data = JSON.parse(JSON.stringify(db()));
-    data.settings.todo.token = ''; // 備份檔不含 token
+    data.settings.todo.token = ''; // 備份檔不含密碼
+    if (data.settings.folio) data.settings.folio.token = '';
     const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
     const a = document.createElement('a');
     a.href = url;
@@ -2085,7 +2137,11 @@ function viewSettings() {
     try {
       const data = JSON.parse(await file.text());
       if (!Array.isArray(data.todos) || !Array.isArray(data.notes)) throw new Error();
-      data.settings = { ...data.settings, todo: { ...data.settings?.todo, token: s.todo.token } };
+      data.settings = {
+        ...data.settings,
+        todo: { ...data.settings?.todo, token: s.todo.token },
+        folio: { ...data.settings?.folio, token: s.folio.token },
+      };
       replaceAll(data);
       applyTheme(settings().appearance);
       toast('已匯入');
