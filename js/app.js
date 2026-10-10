@@ -475,6 +475,28 @@ function upcomingHtml() {
     .join('');
 }
 
+/** 首頁「接下來」：還沒結束的行程（最多 3 筆）；沒有就不顯示 */
+function upcomingSection() {
+  const now = new Date();
+  const n = db().events.filter((e) => new Date(e.end) >= now).length;
+  if (!n) return '';
+  return `<h2 class="group-header big">接下來<a href="#/events">全部</a></h2>
+    <a class="up-card" href="#/events" style="${featureVars('event')}"><div class="upcoming">${upcomingHtml()}</div></a>`;
+}
+
+/** 今天還沒結束的行程數（行程 icon 上的紅點） */
+function eventsLeftToday() {
+  const now = new Date();
+  return db().events.filter((e) => new Date(e.end) >= now && dayDiff(new Date(e.start)) === 0).length;
+}
+
+function setBadge(id, n) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = n > 99 ? '99+' : n;
+  el.hidden = !n;
+}
+
 function petChip() {
   const pet = db().pet;
   const energy = energyNow(pet);
@@ -623,25 +645,22 @@ function viewHome() {
         <p class="capture-hint" id="captureHint"></p>
       </form>
 
-      <div class="tiles">
-        <a class="tile" href="#/todo" style="${featureVars('todo')}">
-          <div class="tile-head"><span class="tile-icon">${icon('checklist')}</span><span class="tile-count" id="todoCount">${open.length}</span></div>
-          <div class="tile-name">待辦事項<small>${open.length ? `${open.length} 件未完成` : '寫下要做的事'}</small></div>
+      <nav class="app-icons" aria-label="功能">
+        <a class="app-icon" href="#/todo" style="${featureVars('todo')}">
+          <span class="app-glyph">${icon('checklist')}<span class="badge" id="todoCount" ${open.length ? '' : 'hidden'}>${open.length}</span></span>
+          <span class="app-label">待辦</span>
         </a>
-        <a class="tile" href="#/notes" style="${featureVars('note')}">
-          <div class="tile-head"><span class="tile-icon">${icon('note')}</span><span class="tile-count" id="noteCount">${db().notes.length}</span></div>
-          <div class="tile-name">筆記<small>${db().notes.length ? `寫下想法・送到 ${targetName()}` : '開始第一篇筆記'}</small></div>
+        <a class="app-icon" href="#/notes" style="${featureVars('note')}">
+          <span class="app-glyph">${icon('note')}</span>
+          <span class="app-label">筆記</span>
         </a>
-        <a class="tile wide" href="#/events" style="${featureVars('event')}">
-          <div class="tile-head">
-            <span class="tile-icon day">${now.getDate()}</span>
-            <span class="tile-name">行程</span>
-            ${icon('chevronRight', 'chev')}
-          </div>
-          <div class="upcoming" id="upcoming">${upcomingHtml()}
-          </div>
+        <a class="app-icon" href="#/events" style="${featureVars('event')}">
+          <span class="app-glyph cal"><small>週${WEEK[now.getDay()]}</small><b>${now.getDate()}</b><span class="badge" id="eventCount" hidden></span></span>
+          <span class="app-label">行程</span>
         </a>
-      </div>
+      </nav>
+
+      <div id="upcomingWrap">${upcomingSection()}</div>
 
       ${
         pending
@@ -692,11 +711,12 @@ function viewHome() {
     },
   });
   liveMascot = mascot;
+  setBadge('eventCount', eventsLeftToday());
   bindCapture(() => {
     const openNow = db().todos.filter((t) => !t.done).length;
-    document.getElementById('todoCount').textContent = openNow;
-    document.getElementById('noteCount').textContent = db().notes.length;
-    document.getElementById('upcoming').innerHTML = upcomingHtml();
+    setBadge('todoCount', openNow);
+    document.getElementById('upcomingWrap').innerHTML = upcomingSection();
+    setBadge('eventCount', eventsLeftToday());
     document.getElementById('petChip').innerHTML = petChip();
   });
   try {
@@ -1882,10 +1902,10 @@ function viewAppearance() {
       <h1 class="large-title">外觀</h1>
 
       <div class="preview-phone">
-        <div class="mini-tiles">
-          <div class="mini-tile"><span class="tile-icon" style="${featureVars('todo')}">${icon('checklist')}</span><span class="mini-label">待辦</span></div>
-          <div class="mini-tile"><span class="tile-icon" style="${featureVars('note')}">${icon('note')}</span><span class="mini-label">筆記</span></div>
-          <div class="mini-tile"><span class="tile-icon day" style="${featureVars('event')}">${new Date().getDate()}</span><span class="mini-label">行程</span></div>
+        <div class="app-icons mini">
+          <span class="app-icon" style="${featureVars('todo')}"><span class="app-glyph">${icon('checklist')}</span><span class="app-label">待辦</span></span>
+          <span class="app-icon" style="${featureVars('note')}"><span class="app-glyph">${icon('note')}</span><span class="app-label">筆記</span></span>
+          <span class="app-icon" style="${featureVars('event')}"><span class="app-glyph cal"><small>週${WEEK[new Date().getDay()]}</small><b>${new Date().getDate()}</b></span><span class="app-label">行程</span></span>
         </div>
         <div class="btn btn-primary">${icon('send')}主要按鈕</div>
       </div>

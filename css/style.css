@@ -201,7 +201,7 @@ input, textarea, select { outline: none; }
   text-align: center;
   font-variant-numeric: tabular-nums;
 }
-.icon-btn:active, .pill-btn:active, .btn:active, .capsule:active, .tile:active, .swatch:active { transform: scale(0.96); opacity: 0.8; }
+.icon-btn:active, .pill-btn:active, .btn:active, .capsule:active, .swatch:active { transform: scale(0.96); opacity: 0.8; }
 
 /* ---------- 頁面 ---------- */
 .page {
@@ -398,43 +398,55 @@ input, textarea, select { outline: none; }
 .value-pill .i { font-size: 13px; color: var(--label-2); }
 
 /* ---------- 首頁 ---------- */
-.tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.tile {
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 18px;
-  min-height: 128px;
-  padding: 14px 14px 13px;
-  border-radius: var(--r-lg);
-  background: var(--card);
-  color: var(--label);
-  box-shadow: var(--shadow);
-  transition: transform 0.2s var(--ease), opacity 0.2s;
-}
-.tile-head { display: flex; align-items: flex-start; justify-content: space-between; }
-.tile-icon {
-  width: 40px;
-  height: 40px;
+.app-icons { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 22px 0 8px; }
+.app-icon { display: flex; flex-direction: column; align-items: center; gap: 7px; color: var(--label); -webkit-tap-highlight-color: transparent; }
+.app-glyph {
+  position: relative;
+  width: 68px;
+  height: 68px;
   display: grid;
   place-items: center;
-  border-radius: 50%;
-  background: var(--c);
+  border-radius: 22.5%;
+  background: linear-gradient(160deg, color-mix(in srgb, var(--c) 72%, #fff), var(--c));
   color: var(--on-c);
-  font-size: 21px;
+  font-size: 34px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 6px 16px color-mix(in srgb, var(--c) 28%, transparent);
+  transition: transform 0.2s var(--ease), filter 0.2s;
 }
-.tile-icon .i { stroke-width: 2.1; }
-.tile-icon.day { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.tile-count { font-size: 32px; line-height: 1; font-weight: 700; font-variant-numeric: tabular-nums; }
-.tile-name { font-size: 17px; font-weight: 600; color: var(--label-2); }
-.tile-name small { display: block; margin-top: 1px; font-size: 13px; font-weight: 400; color: var(--label-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.tile.wide { grid-column: 1 / -1; gap: 12px; min-height: 0; }
-.tile.wide .tile-head { align-items: center; gap: 12px; justify-content: flex-start; }
-.tile.wide .tile-name { flex: 1; color: var(--label); font-size: 19px; font-weight: 700; }
-.tile.wide .chev { color: var(--label-3); font-size: 16px; stroke-width: 2.6; }
+.app-glyph .i { stroke-width: 2; }
+.app-icon:active .app-glyph { transform: scale(0.92); filter: brightness(0.92); }
+/* 行程：像 iPhone 行事曆的 icon */
+.app-glyph.cal { background: var(--card); color: var(--label); align-content: center; gap: 0; }
+.app-glyph.cal small { font-size: 11px; font-weight: 600; color: var(--c); line-height: 1; }
+.app-glyph.cal b { font-size: 33px; font-weight: 300; line-height: 1.05; font-variant-numeric: tabular-nums; }
+.app-icons.mini { margin: 0 0 14px; }
+.app-icons.mini .app-glyph { width: 50px; height: 50px; font-size: 25px; }
+.app-icons.mini .app-glyph.cal b { font-size: 24px; }
+.app-icons.mini .app-glyph.cal small { font-size: 9px; }
+.app-icons.mini .app-label { font-size: 11px; }
+.app-label { font-size: 13px; font-weight: 500; color: var(--label); }
+.badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
+  background: #ff3b30;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 22px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 2px var(--bg);
+}
+.up-card { display: block; padding: 2px 16px; border-radius: var(--r-lg); background: var(--card); color: var(--label); box-shadow: var(--shadow); }
+.up-card .up-row:first-child { border-top: 0; }
 .upcoming { display: flex; flex-direction: column; }
 .up-row { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-top: 0.5px solid var(--sep); }
-.up-row .bar { width: 4px; align-self: stretch; border-radius: 2px; background: var(--event); }
+.up-row .bar { width: 4px; height: auto; align-self: stretch; border-radius: 2px; background: var(--event); }
 .up-row .t { flex: 1; min-width: 0; }
 .up-row .t b { display: block; font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .up-row .t small { color: var(--label-2); font-size: 13px; }
@@ -715,11 +727,6 @@ code { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 13px; 
   border: 0.5px solid var(--sep);
   box-shadow: inset 0 0 0 6px var(--card);
 }
-.preview-phone .mini-tiles { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
-.mini-tile { padding: 10px; border-radius: 14px; background: var(--card); box-shadow: var(--shadow); }
-.mini-tile .tile-icon { width: 28px; height: 28px; font-size: 15px; }
-.mini-tile .tile-icon.day { font-size: 13px; }
-.mini-tile .mini-label { display: block; margin-top: 10px; font-size: 13px; font-weight: 600; color: var(--label-2); }
 .preview-phone .btn { height: 40px; margin-top: 10px; font-size: 15px; border-radius: 11px; }
 
 .swatches { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
