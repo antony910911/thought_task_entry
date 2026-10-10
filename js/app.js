@@ -67,6 +67,48 @@ function dueInfo(due) {
   return { text: `${d.getMonth() + 1}月${d.getDate()}日`, cls: '', diff };
 }
 
+// ---------- 換頁與返回 ----------
+// 每次換頁都會在瀏覽器歷史多一筆，iPhone 往右滑（返回）就是照這個歷史往回走。
+// 「存好回清單」「左上角返回」如果也當成新的一頁，歷史會變成 主頁 → 筆記 → 清單 → 筆記…，
+// 滑回去就一直在筆記頁打轉。所以這裡自己記一份走過的頁面：要回去的頁面剛好是上一頁時就真的「返回」，
+// 不然就用 replace 取代目前這一頁，不再疊一層。
+
+const NAV_KEY = 'tte.nav';
+let navStack = [];
+let navReplacing = false;
+try {
+  navStack = JSON.parse(sessionStorage.getItem(NAV_KEY) || '[]');
+} catch {}
+if (navStack[navStack.length - 1] !== (location.hash || '#/')) navStack = [location.hash || '#/'];
+
+/** 每次 hashchange 呼叫：更新走過的頁面 */
+function trackNav() {
+  const h = location.hash || '#/';
+  if (navReplacing) navStack[navStack.length - 1] = h;
+  else if (navStack.length > 1 && navStack[navStack.length - 2] === h) navStack.pop();
+  else if (navStack[navStack.length - 1] !== h) navStack.push(h);
+  navReplacing = false;
+  if (navStack.length > 50) navStack = navStack.slice(-50);
+  try {
+    sessionStorage.setItem(NAV_KEY, JSON.stringify(navStack));
+  } catch {}
+}
+
+/** 換頁；replace：取代目前這一頁（不會多一層返回） */
+function go(hash, { replace = false } = {}) {
+  if ((location.hash || '#/') === hash) return;
+  if (replace) {
+    navReplacing = true;
+    location.replace(hash);
+  } else location.hash = hash;
+}
+
+/** 回到某一頁：剛好是上一頁就真的返回，否則取代目前這一頁 */
+function goBack(hash) {
+  if (navStack.length > 1 && navStack[navStack.length - 2] === hash) history.back();
+  else go(hash, { replace: true });
+}
+
 function nav({ back, backLabel = '返回', title = '', actions = '', staticTitle = false } = {}) {
   return `<header class="nav${staticTitle ? ' static' : ''}">
     ${back ? `<a class="nav-back" href="${back}">${icon('chevronLeft')}<span>${esc(backLabel)}</span></a>` : '<span></span>'}
@@ -705,7 +747,7 @@ function viewTodo(editId = null) {
   const openCount = () => db().todos.filter((t) => !t.done).length;
   const editing = editId ? db().todos.find((t) => t.id === editId) : null;
   if (editId && !editing) {
-    location.hash = '#/todo/list';
+    go('#/todo/list', { replace: true });
     return;
   }
   let priority = editing ? editing.priority : 'normal';
@@ -793,7 +835,7 @@ function viewTodo(editId = null) {
 
   if (editing) {
     document.getElementById('del').addEventListener('click', () =>
-      sheet([{ label: '刪除這件待辦', danger: true, run: () => (deleteTodo(editing), toast('已刪除'), (location.hash = '#/todo/list')) }])
+      sheet([{ label: '刪除這件待辦', danger: true, run: () => (deleteTodo(editing), toast('已刪除'), goBack('#/todo/list')) }])
     );
     form.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -813,7 +855,7 @@ function viewTodo(editId = null) {
       if (todoSync.isConfigured(settings()) && editing.sync && (editing.sync.at || editing.sync.status === 'error')) syncTodo(editing);
       toast('已儲存');
       if (editing.due && editing.due !== dueBefore) remindTodos([editing]);
-      location.hash = '#/todo/list';
+      goBack('#/todo/list');
     });
     titleEl.focus();
     return;
@@ -949,7 +991,7 @@ function deleteTag(tag) {
 function viewNoteEditor(id) {
   const existing = id ? db().notes.find((n) => n.id === id) : null;
   if (id && !existing) {
-    location.hash = '#/notes/list';
+    go('#/notes/list', { replace: true });
     return;
   }
   let draft = null;
@@ -1132,7 +1174,8 @@ function viewNoteEditor(id) {
     const saved = persist();
     if (!saved) return;
     toast('已儲存');
-    location.hash = existing ? '#/notes/list' : `#/notes/edit/${saved.id}`;
+    if (existing) goBack('#/notes/list');
+    else go(`#/notes/edit/${saved.id}`, { replace: true });
   });
 
   $('send')?.addEventListener('click', async (e) => {
@@ -1144,12 +1187,12 @@ function viewNoteEditor(id) {
     const result = await syncNote(saved);
     if (result.status === 'ok') {
       toast(`已送到 ${tname}`);
-      if (existing) location.hash = '#/notes/list';
+      if (existing) goBack('#/notes/list');
       else if (/^#\/notes(\/new)?$/.test(location.hash)) viewNoteEditor(null); // 換成空白新筆記
-      else location.hash = '#/notes/new';
+      else go('#/notes/new', { replace: true });
     } else {
       toast(`送出失敗：${result.error}`, 'error');
-      if (!existing) location.hash = `#/notes/edit/${saved.id}`;
+      if (!existing) go(`#/notes/edit/${saved.id}`, { replace: true });
       else {
         btn.disabled = false;
         btn.innerHTML = `${icon('send')}送到 ${tname}`;
@@ -1169,7 +1212,7 @@ function viewNoteEditor(id) {
       await navigator.clipboard?.writeText(text);
       toast('已複製');
     }
-    if (!existing) location.hash = `#/notes/edit/${saved.id}`;
+    if (!existing) go(`#/notes/edit/${saved.id}`, { replace: true });
   });
 
   $('more')?.addEventListener('click', () => {
@@ -1193,7 +1236,7 @@ function viewNoteEditor(id) {
         db().notes = db().notes.filter((n) => n !== existing);
         save();
         toast('已刪除');
-        location.hash = '#/notes/list';
+        goBack('#/notes/list');
       },
     });
     sheet(actions, via === 'onenote' ? 'OneNote 上已送出的頁面不會被刪除' : '');
@@ -2391,7 +2434,7 @@ const routes = [
   [/^#\/pet$/, viewPet],
   [/^#\/help\/siri$/, viewHelpSiri],
   [/^#\/help\/reminders$/, viewHelpReminders],
-  [/^#\/add\/(.*)$/, (text) => ((ui.capture = decodeURIComponent(text)), (location.hash = '#/'))],
+  [/^#\/add\/(.*)$/, (text) => ((ui.capture = decodeURIComponent(text)), go('#/', { replace: true }))],
   [/^#\/notes(?:\/new)?$/, () => viewNoteEditor(null)],
   [/^#\/notes\/list$/, viewNoteList],
   [/^#\/notes\/edit\/(.+)$/, (id) => viewNoteEditor(decodeURIComponent(id))],
@@ -2419,7 +2462,7 @@ function render() {
       return;
     }
   }
-  location.hash = '#/';
+  go('#/', { replace: true });
 }
 
 /** 每天第一次打開：算連續天數、餵一顆星星 */
@@ -2463,7 +2506,15 @@ async function start() {
   } catch (e) {
     toast(`登入失敗：${e.message}`, 'error');
   }
+  window.addEventListener('hashchange', trackNav);
   window.addEventListener('hashchange', render);
+  // 左上角的返回：走「返回」而不是再開一頁
+  document.addEventListener('click', (e) => {
+    const a = e.target.closest('a.nav-back');
+    if (!a || e.metaKey || e.ctrlKey) return;
+    e.preventDefault();
+    goBack(a.getAttribute('href'));
+  });
   window.addEventListener('scroll', updateNav, { passive: true });
   render();
   retryPending();
