@@ -244,10 +244,32 @@ async function syncTodo(todo) {
 
 function deleteTodo(todo) {
   db().todos = db().todos.filter((t) => t !== todo);
+  // 送過（或送到一半）的才需要通知對方刪除；送不出去就先記著，連上網路、下次打開時重送
+  const sent = todo.sync && (todo.sync.at || ['pending', 'error'].includes(todo.sync.status));
+  if (sent && todoSync.isConfigured(settings())) db().outbox.push({ type: 'todo.deleted', todo: { ...todo }, at: new Date().toISOString() });
   save();
-  // 送過的才需要通知對方刪除；失敗也不擋
-  if (todoSync.isConfigured(settings()) && todo.sync && todo.sync.at)
-    todoSync.sendTodo(todo, settings(), 'todo.deleted').catch(() => {});
+  flushOutbox();
+}
+
+let flushing = null;
+/** 把記著的刪除送出去；遇到送不出去（離線等）就停，下次再試 */
+function flushOutbox() {
+  if (flushing) return flushing;
+  flushing = (async () => {
+    while (db().outbox.length && todoSync.isConfigured(settings())) {
+      const item = db().outbox[0];
+      try {
+        await todoSync.sendTodo(item.todo, settings(), item.type);
+      } catch {
+        break;
+      }
+      db().outbox = db().outbox.filter((x) => x !== item);
+      save();
+    }
+    flushing = null;
+    refreshCurrent?.();
+  })();
+  return flushing;
 }
 
 /** 有截止日的待辦也丟到 iPhone「提醒事項」（設定裡打開才會） */
@@ -304,6 +326,7 @@ async function syncNote(note) {
 
 async function retryPending() {
   if (!navigator.onLine) return;
+  await flushOutbox();
   const todos = db().todos.filter((t) => t.sync && ['pending', 'error'].includes(t.sync.status));
   if (todoSync.isConfigured(settings())) for (const t of todos) await syncTodo(t);
   const notes = db().notes.filter((n) => n.sync && ['pending', 'error'].includes(n.sync.status));
@@ -326,7 +349,7 @@ async function retryPending() {
 function pendingCount() {
   const bad = (x) => x.sync && ['pending', 'error'].includes(x.sync.status);
   const events = settings().calendar.mode === 'mothership' ? db().events.filter(bad).length : 0;
-  return db().todos.filter(bad).length + db().notes.filter(bad).length + events;
+  return db().todos.filter(bad).length + db().notes.filter(bad).length + events + db().outbox.length;
 }
 
 // ---------- 待辦：共用列 ----------
@@ -2446,7 +2469,10 @@ async function start() {
   retryPending();
   window.addEventListener('online', retryPending);
   // 跨裝置同步：打開時、回到畫面時、開著的時候每 30 秒拿一次別台的變更
-  const pull = () => cloud.syncNow().catch(() => {});
+  const pull = () => {
+    flushOutbox();
+    cloud.syncNow().catch(() => {});
+  };
   pull();
   window.addEventListener('online', pull);
   document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && pull());

@@ -233,7 +233,7 @@ Authorization: Bearer {token}        ← 有填 token 才會帶
 |---|---|
 | `todo.created` | 第一次同步這筆待辦 |
 | `todo.updated` | 修改內容、勾選完成或取消完成（看 `done`） |
-| `todo.deleted` | 在 App 裡刪除（只有同步過的才會送） |
+| `todo.deleted` | 在 App 裡刪除（只有同步過的才會送；離線時先記著，連上網路或下次打開時重送）。Mothership 收到後會把卡片移到「封存」 |
 
 - 回應 2xx 就算成功。如果回應 `{"id": "..."}`，App 會記下遠端 id。
 - 「測試連線」按鈕會送出 `{"type": "ping"}`，請直接回 2xx。

@@ -7,6 +7,8 @@ const DEFAULTS = {
   notes: [],
   events: [],
   tagLibrary: [],
+  // 還沒成功通知專案管理工具的刪除（離線時先記著，之後重送）；只存在這台裝置
+  outbox: [],
   // 外星人養成（規則見 pet.js）
   pet: {
     xp: 0,
