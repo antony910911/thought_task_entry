@@ -109,7 +109,7 @@ npm test           # 行程語句解析的單元測試
 - `@地點`、`[名稱]` 或 `【名稱】`；沒有括號時，剩下的文字就是名稱；有括號時多的文字放進備註
 - `#標籤` 會寫進備註
 
-### 寫入方式（設定頁切換）
+### 寫入方式（設定 › 行程 切換）
 
 **A. iOS 捷徑（推薦，全自動寫入內建行事曆）**——只需建立一次：
 
@@ -143,7 +143,7 @@ npm test           # 行程語句解析的單元測試
 Folio 是你的另一個筆記 App（repo `folio`）。Beamup 的筆記會直接送進 Folio 的雲端同步，打開 Folio 就看得到：
 
 1. Folio 要先部署好，並且已經設定跨裝置同步（Cloudflare 的 `SYNC_TOKEN`，見 Folio 的 README）。
-2. Beamup → **設定 › 筆記 → Folio**：填 **Folio 網址**（例如 `https://folio.xxx.workers.dev`）和**同步密碼**（就是 `SYNC_TOKEN`），按「測試連線」。
+2. Beamup → **設定 › 筆記**：填 **Folio 網址**（例如 `https://folio.xxx.workers.dev`）和**同步密碼**（就是 `SYNC_TOKEN`），按「測試連線」。
 3. 之後寫筆記按「送到 Folio」，或在首頁萬用輸入框送出筆記，就會出現在 Folio 的 **Beamup › 收件匣**：
    - 一篇筆記一頁，標題前面加上 `[標籤]`，第一行列出 `#標籤`。
    - 內文的 `- [ ] 事項`、`- [x] 事項` 會變成 Folio 的勾選清單。
@@ -172,7 +172,7 @@ App 透過 Microsoft 官方的 Microsoft Graph API 在你選定的分區建立�
 ### 需要先註冊一個 App（一次性，免費）
 1. 用公司帳號登入 <https://entra.microsoft.com>（或 portal.azure.com → Microsoft Entra ID）→ **應用程式註冊** → **新增註冊**。
 2. 名稱隨意，例如「Beamup」；支援的帳戶類型選 **「僅此組織目錄中的帳戶」**。
-3. 重新導向 URI：平台選 **「單頁應用程式 (SPA)」**，填入 App 設定頁顯示的網址（也就是你部署的網址，例如 `https://xxx.pages.dev/`）。
+3. 重新導向 URI：平台選 **「單頁應用程式 (SPA)」**，填入 App「設定 › Microsoft 帳號」顯示的網址（也就是你部署的網址，例如 `https://xxx.pages.dev/`）。
 4. 建立後，複製 **應用程式 (用戶端) 識別碼** 和 **目錄 (租用戶) 識別碼**。
 5. **API 權限** → 新增 → Microsoft Graph → 委派的權限，勾選 `Notes.Create`、`User.Read`；要用 Outlook 寫行程的話，再勾 `Calendars.ReadWrite`。
 6. 回到 App → 設定：填入用戶端識別碼、租用戶識別碼（或公司網域，例如 `contoso.com`）→ **登入 Microsoft 帳號** → **載入我的筆記本分區** → 選擇統一筆記的分區。
@@ -195,7 +195,7 @@ App 透過 Microsoft 官方的 Microsoft Graph API 在你選定的分區建立�
 
 ### 送到自己的伺服器（Webhook）
 
-到設定頁填入 **Webhook 網址**，以及選填的 Token。待辦有變動時，App 會送出：
+到「設定 › 待辦」填入 **Webhook 網址**，以及選填的 Token。待辦有變動時，App 會送出：
 
 ```http
 POST {webhookUrl}

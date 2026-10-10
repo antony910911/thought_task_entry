@@ -735,7 +735,7 @@ function viewTodo(editId = null) {
           ? `<p class="caption">${configured && editing.sync && editing.sync.at ? '儲存後會同步更新到專案管理工具' : '只會改 App 裡的這一筆'}</p>`
           : configured
             ? ''
-            : `<p class="caption">尚未連結專案管理工具，待辦只會存在 App 內 · <a href="#/settings">設定</a></p>`
+            : `<p class="caption">尚未連結專案管理工具，待辦只會存在 App 內 · <a href="#/settings/todo">設定</a></p>`
       }
 
       ${editing ? '' : `<h2 class="group-header big">最近新增<a href="#/todo/list">全部</a></h2><ul class="group rows" id="recent"></ul>`}
@@ -966,7 +966,7 @@ function viewNoteEditor(id) {
              <span class="spacer"></span>
              <button class="capsule primary" id="send">${icon('send')}${sentToFolio && tname === 'Folio' ? '更新到 Folio' : `送到 ${tname}`}</button>`
           : `<button class="icon-btn plain" id="share" aria-label="分享">${icon('share')}</button>
-             <span class="spacer"><a href="#/settings">連結 Folio 自動同步</a></span>
+             <span class="spacer"><a href="#/settings/notes">連結 Folio 自動同步</a></span>
              <button class="capsule primary" id="saveOnly">${icon('check')}儲存</button>`
       }
     </footer>`;
@@ -1429,7 +1429,7 @@ function viewEvents() {
       <div class="ev-actions">
         <button class="btn btn-primary" id="add" disabled>${icon('calendarPlus')}加入行事曆</button>
         <button class="btn btn-tinted" id="cancelEdit" hidden style="margin-top:10px">取消修改</button>
-        <p class="caption">${esc(MODE_TEXT[cfg.mode](cfg))} · <a href="#/settings">變更</a></p>
+        <p class="caption">${esc(MODE_TEXT[cfg.mode](cfg))} · <a href="#/settings/calendar">變更</a></p>
       </div>
 
       <h2 class="group-header big">最近加入</h2>
@@ -1878,17 +1878,62 @@ function viewAppearance() {
 
 // ---------- 設定 ----------
 
+// ---------- 設定（像 iPhone 的設定：首頁一行一個項目、顯示目前狀態，點進去才是細節） ----------
+
+const CAL_MODES = [
+  ['shortcut', 'iOS 捷徑', '寫入 iPhone 行事曆，每次會跳到捷徑 App 一下', 'bolt'],
+  ['mothership', 'Mothership', '送到 Mothership，自動寫進它連接的 iCloud／Google／Outlook，修改刪除也會跟著', 'link'],
+  ['outlook', '公司 Outlook', '用 Microsoft 帳號寫入，會同步到 iPhone', 'building'],
+  ['ics', '行事曆檔案', '免設定，每次需再按「加入」', 'calendar'],
+];
+
+const calModeName = (id) => (CAL_MODES.find((m) => m[0] === id) || CAL_MODES[0])[1];
+const hostOf = (u) => String(u || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+
+function todoLinkStatus(s) {
+  const u = s.todo.webhookUrl;
+  if (!u) return '';
+  return u.startsWith('pm1.') ? 'Mothership' : `Webhook · ${hostOf(u)}`;
+}
+
+/** 設定裡的子頁面共用外框 */
+function settingsPage(title, body) {
+  $app.innerHTML = `
+    ${nav({ back: '#/settings', backLabel: '設定', title })}
+    <main class="page">
+      <h1 class="large-title">${title}</h1>
+      ${body}
+    </main>`;
+}
+
+const byId = (id) => document.getElementById(id);
+const bindSetting = (id, obj, key, after) =>
+  byId(id).addEventListener('change', (e) => {
+    obj[key] = e.target.value.trim();
+    save();
+    after?.(e);
+  });
+/** 重畫目前頁面但停在原本捲動的位置 */
+function rerender(view) {
+  const y = window.scrollY;
+  view();
+  window.scrollTo(0, y);
+}
+
+function settingsRow({ href, icon: ic, color, label, sub = '', value = '' }) {
+  return `<li><a class="cell tap" href="${href}">
+    <span class="cell-icon" style="${color}">${icon(ic)}</span>
+    <span class="cell-label">${label}${sub ? `<small>${sub}</small>` : ''}</span>
+    ${value}${icon('chevronRight', 'chev')}
+  </a></li>`;
+}
+const statusValue = (text) => (text ? `<span class="cell-value">${esc(text)}</span>` : '<span class="cell-value muted-val">未設定</span>');
+
 function viewSettings() {
   const s = settings();
-  const signedIn = ms.isSignedIn();
   const theme = themeById(s.appearance.theme);
   const modeName = MODES.find((m) => m.id === s.appearance.mode)?.name || '自動';
-  const calModes = [
-    ['shortcut', 'iOS 捷徑', '一鍵寫入 iPhone 行事曆（推薦）'],
-    ['ics', '行事曆檔案', '免設定，每次需再按「加入」'],
-    ['outlook', '公司 Outlook', '用 Microsoft 帳號寫入，會同步到 iPhone'],
-    ['mothership', 'Mothership', '送到 Mothership，自動寫進它連接的 iCloud／Google／Outlook，修改刪除也會跟著'],
-  ];
+  const pending = pendingCount();
 
   $app.innerHTML = `
     ${nav({ back: '#/', backLabel: 'Beamup', title: '設定' })}
@@ -1896,125 +1941,27 @@ function viewSettings() {
       <h1 class="large-title">設定</h1>
 
       <ul class="group icons">
-        <li><a class="cell tap" href="#/appearance">
-          <span class="cell-icon">${icon('palette')}</span>
-          <span class="cell-label">外觀</span>
-          <span class="cell-value">${esc(theme.name)} · ${modeName}</span>${icon('chevronRight', 'chev')}
-        </a></li>
+        ${settingsRow({ href: '#/appearance', icon: 'palette', color: '', label: '外觀', value: statusValue(`${theme.name} · ${modeName}`) })}
       </ul>
 
-      <h2 class="group-header">待辦事項 → 專案管理工具</h2>
+      <h2 class="group-header">同步到哪裡</h2>
       <ul class="group icons">
-        <li class="cell">
-          <span class="cell-icon" style="${featureVars('todo')}">${icon('link')}</span>
-          <label class="cell-label field"><span>Mothership 連接碼或 Webhook 網址</span><input id="webhookUrl" type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="pm1.… 或 https://…/api/todos" value="${esc(s.todo.webhookUrl)}"></label>
-        </li>
-        <li class="cell">
-          <span class="cell-icon" style="--c: var(--gray)">${icon('key')}</span>
-          <label class="cell-label field"><span>Token（選填）</span><input id="token" type="password" autocomplete="off" placeholder="以 Authorization: Bearer 送出" value="${esc(s.todo.token)}"></label>
-        </li>
-        <li><button class="cell action tap" id="ping">測試連線</button></li>
+        ${settingsRow({ href: '#/settings/todo', icon: 'checklist', color: featureVars('todo'), label: '待辦', value: statusValue(todoLinkStatus(s)) })}
+        ${settingsRow({ href: '#/settings/notes', icon: 'note', color: featureVars('note'), label: '筆記', value: statusValue(folio.isConfigured(s) ? 'Folio' : s.onenote.sectionId && ms.isSignedIn() ? 'OneNote' : '') })}
+        ${settingsRow({ href: '#/settings/calendar', icon: 'calendar', color: featureVars('event'), label: '行程', value: statusValue(calModeName(s.calendar.mode)) })}
       </ul>
-      <p class="group-footer">貼上 Mothership「設定 › Beamup」的連接碼，新增的待辦就會直接進 Mothership 上方的「待辦」清單（高優先進「急件」），修改、勾選完成也會同步。用 Webhook 時會 POST 一份 JSON 到這個網址，格式請見 README；Token 只有 Webhook 會用到。</p>
-
-      <h2 class="group-header">筆記 → Folio</h2>
-      <ul class="group icons">
-        <li class="cell">
-          <span class="cell-icon" style="${featureVars('note')}">${icon('book')}</span>
-          <label class="cell-label field"><span>Folio 網址</span><input id="folioUrl" type="url" inputmode="url" placeholder="https://folio.xxx.workers.dev" autocomplete="off" value="${esc(s.folio.url)}"></label>
-        </li>
-        <li class="cell">
-          <span class="cell-icon" style="--c: var(--gray)">${icon('key')}</span>
-          <label class="cell-label field"><span>同步密碼（Folio 的 SYNC_TOKEN）</span><input id="folioToken" type="password" autocomplete="off" value="${esc(s.folio.token)}"></label>
-        </li>
-        <li><button class="cell action tap" id="folioPing">測試連線</button></li>
-      </ul>
-      <p class="group-footer" id="folioStatus" hidden></p>
-      <p class="group-footer">筆記會送到 Folio 的「Beamup › 收件匣」，一篇筆記一頁。修改後再送會更新同一頁，在 Beamup 刪除也會一起刪掉。設定了 Folio 就不會送到 OneNote。</p>
-
-      <h2 class="group-header">Microsoft 帳號（${s.calendar.mode === 'outlook' ? 'Outlook 行事曆・' : ''}OneNote，選用）</h2>
-      <ul class="group icons">
-        <li class="cell">
-          <span class="cell-icon" style="--c: #0078D4">${icon('key')}</span>
-          <label class="cell-label field"><span>Application (client) ID</span><input id="clientId" placeholder="xxxxxxxx-xxxx-…" autocomplete="off" value="${esc(s.microsoft.clientId)}"></label>
-        </li>
-        <li class="cell">
-          <span class="cell-icon" style="--c: var(--gray)">${icon('building')}</span>
-          <label class="cell-label field"><span>租用戶（公司網域或 Tenant ID）</span><input id="tenant" placeholder="organizations" autocomplete="off" value="${esc(s.microsoft.tenant)}"></label>
-        </li>
-        <li><button class="cell tap" id="copy">
-          <span class="cell-icon" style="--c: var(--gray)">${icon('copy')}</span>
-          <span class="cell-label">重新導向 URI<small>${esc(ms.redirectUri())}</small></span>
-        </button></li>
-        ${
-          signedIn
-            ? `<li class="cell"><span class="cell-icon" style="--c: var(--todo); --on-c: var(--on-todo)">${icon('person')}</span>
-                 <span class="cell-label">已登入<small>${esc(ms.account())}</small></span></li>
-               <li><button class="cell action danger tap" id="logout">登出</button></li>`
-            : `<li><button class="cell action tap" id="login">登入 Microsoft 帳號</button></li>`
-        }
-      </ul>
-
-      <h2 class="group-header">OneNote 統一筆記</h2>
-      <ul class="group icons">
-        <li class="cell">
-          <span class="cell-icon" style="--c: #7719AA">${icon('book')}</span>
-          <span class="cell-label">分區</span>
-          <label class="value-pill ${s.onenote.sectionId ? '' : 'empty-val'}" style="max-width:55%">
-            <span id="sectionName" style="overflow:hidden;text-overflow:ellipsis">${esc(s.onenote.sectionName || '未選擇')}</span>${icon('chevronUpDown')}
-            <select id="section" ${signedIn ? '' : 'disabled'}>
-              ${s.onenote.sectionId ? `<option value="${esc(s.onenote.sectionId)}">${esc(s.onenote.sectionName)}</option>` : '<option value="">未選擇</option>'}
-            </select>
-          </label>
-        </li>
-        <li><button class="cell action tap" id="loadSections" ${signedIn ? '' : 'disabled'}>${signedIn ? '載入我的筆記本分區' : '登入後即可選擇分區'}</button></li>
-      </ul>
-
-      <h2 class="group-header">行程 → 行事曆</h2>
-      <ul class="group icons" id="calModes">
-        ${calModes
-          .map(
-            ([id, name, desc]) => `<li><button class="cell tap" data-mode="${id}">
-              <span class="cell-icon" style="${featureVars('event')}">${icon(id === 'shortcut' ? 'bolt' : id === 'ics' ? 'calendar' : 'building')}</span>
-              <span class="cell-label">${name}<small>${desc}</small></span>
-              ${s.calendar.mode === id ? icon('check', 'checkmark') : ''}
-            </button></li>`
-          )
-          .join('')}
-      </ul>
-      <ul class="group icons" style="margin-top:16px">
-        <li class="cell">
-          <span class="cell-icon" style="--c: var(--gray)">${icon('bolt')}</span>
-          <span class="cell-label">捷徑名稱</span>
-          <input id="shortcutName" class="right" style="flex:0 1 50%" value="${esc(s.calendar.shortcutName)}">
-        </li>
-        <li class="cell">
-          <span class="cell-icon" style="--c: var(--gray)">${icon('timer')}</span>
-          <span class="cell-label">預設長度</span>
-          <label class="value-pill"><span id="durText">${s.calendar.defaultDuration} 分鐘</span>${icon('chevronUpDown')}
-            <select id="duration">${[30, 60, 90, 120].map((m) => `<option value="${m}" ${Number(s.calendar.defaultDuration) === m ? 'selected' : ''}>${m} 分鐘</option>`).join('')}</select>
-          </label>
-        </li>
-      </ul>
-      <p class="group-footer">只寫開始時間時，行程會用預設長度。</p>
 
       <h2 class="group-header">提醒與快速記錄</h2>
       <ul class="group icons">
-        <li><a class="cell tap" href="#/help/siri">
-          <span class="cell-icon" style="--c: #5E5CE6">${icon('mic')}</span>
-          <span class="cell-label">Siri 快速記錄<small>說「嘿 Siri，丟給 ${esc(character(s.appearance.alien).name)}」</small></span>${icon('chevronRight', 'chev')}
-        </a></li>
-        <li><a class="cell tap" href="#/help/reminders">
-          <span class="cell-icon" style="--c: var(--danger)">${icon('bell')}</span>
-          <span class="cell-label">每天提醒我<small>用 iPhone 捷徑定時通知</small></span>${icon('chevronRight', 'chev')}
-        </a></li>
+        ${settingsRow({ href: '#/help/siri', icon: 'mic', color: '--c: #5E5CE6', label: 'Siri 快速記錄', sub: `說「嘿 Siri，丟給 ${esc(character(s.appearance.alien).name)}」` })}
+        ${settingsRow({ href: '#/help/reminders', icon: 'bell', color: '--c: var(--danger)', label: '每天提醒我', sub: '用 iPhone 捷徑定時通知' })}
         <li class="cell">
-          <span class="cell-icon" style="${featureVars('todo')}">${icon('checklist')}</span>
-          <label class="cell-label" for="remindOn">有截止日的待辦加到提醒事項<small>需要捷徑「${esc(s.reminders.shortcutName)}」</small></label>
+          <span class="cell-icon" style="${featureVars('todo')}">${icon('clock')}</span>
+          <label class="cell-label" for="remindOn">待辦到期提醒<small>有截止日的待辦加到「提醒事項」，需要捷徑「${esc(s.reminders.shortcutName)}」</small></label>
           <input type="checkbox" class="switch" id="remindOn" ${s.reminders.enabled ? 'checked' : ''}>
         </li>
         <li class="cell" ${s.reminders.enabled ? '' : 'hidden'} id="remindTimeRow">
-          <span class="cell-icon" style="--c: var(--gray)">${icon('clock')}</span>
+          <span class="cell-icon" style="--c: var(--gray)">${icon('timer')}</span>
           <span class="cell-label">到期當天幾點提醒</span>
           <input type="time" id="remindTime" class="right" style="flex:0 0 auto" value="${esc(s.reminders.time)}">
         </li>
@@ -2027,10 +1974,14 @@ function viewSettings() {
           <span class="cell-label">本機資料</span>
           <span class="cell-value">待辦 ${db().todos.length}・筆記 ${db().notes.length}・行程 ${db().events.length}</span>
         </li>
-        <li><button class="cell tap" id="retry">
-          <span class="cell-icon" style="--c: var(--warning)">${icon('retry')}</span>
-          <span class="cell-label">重試未同步項目</span><span class="cell-value">${pendingCount()}</span>
-        </button></li>
+        ${
+          pending
+            ? `<li><button class="cell tap" id="retry">
+                <span class="cell-icon" style="--c: var(--warning)">${icon('retry')}</span>
+                <span class="cell-label">重試未同步項目</span><span class="cell-value">${pending}</span>
+              </button></li>`
+            : ''
+        }
         <li><button class="cell tap" id="export">
           <span class="cell-icon">${icon('download')}</span><span class="cell-label">匯出備份</span>${icon('chevronRight', 'chev')}
         </button></li>
@@ -2040,132 +1991,31 @@ function viewSettings() {
         </label></li>
       </ul>
       <p class="group-footer">資料都存在這支手機上。iOS 若長時間沒開 App 可能清除網頁資料，建議偶爾匯出備份。</p>
+
+      <h2 class="group-header">進階</h2>
+      <ul class="group icons">
+        ${settingsRow({ href: '#/settings/microsoft', icon: 'building', color: '--c: #0078D4', label: 'Microsoft 帳號', sub: 'Outlook、OneNote（選用）', value: statusValue(ms.isSignedIn() ? '已登入' : '') })}
+      </ul>
     </main>`;
 
-  const $ = (id) => document.getElementById(id);
-  const bindField = (id, obj, key, after) =>
-    $(id).addEventListener('change', (e) => {
-      obj[key] = e.target.value.trim();
-      save();
-      after?.(e);
-    });
-  bindField('webhookUrl', s.todo, 'webhookUrl');
-  bindField('token', s.todo, 'token');
-  bindField('folioUrl', s.folio, 'url');
-  bindField('folioToken', s.folio, 'token');
-  $('folioPing').addEventListener('click', async () => {
-    if (!folio.isConfigured(s)) return toast('請先填 Folio 網址和同步密碼', 'error');
-    const out = $('folioStatus');
-    out.hidden = false;
-    out.style.color = '';
-    out.textContent = `正在連線 ${folio.baseUrl(s)} …`;
-    try {
-      const n = await folio.ping(s);
-      out.textContent = `✓ 連線成功：${folio.baseUrl(s)}（Folio 裡有 ${n} 筆資料）`;
-      toast(`連線成功（Folio 裡有 ${n} 筆資料）`);
-    } catch (e) {
-      out.style.color = 'var(--danger)';
-      out.textContent = e.message;
-      toast('連線失敗，原因寫在按鈕下方', 'error');
-    }
-  });
-  bindField('clientId', s.microsoft, 'clientId');
-  bindField('tenant', s.microsoft, 'tenant');
-  bindField('shortcutName', s.calendar, 'shortcutName');
-  $('remindOn').addEventListener('change', (e) => {
+  byId('remindOn').addEventListener('change', (e) => {
     s.reminders.enabled = e.target.checked;
     save();
-    $('remindTimeRow').hidden = !e.target.checked;
+    byId('remindTimeRow').hidden = !e.target.checked;
     if (e.target.checked) toast('記得先建立「' + s.reminders.shortcutName + '」捷徑（見「每天提醒我」）');
   });
-  $('remindTime').addEventListener('change', (e) => {
+  byId('remindTime').addEventListener('change', (e) => {
     s.reminders.time = e.target.value || '09:00';
     save();
   });
-  bindField('duration', s.calendar, 'defaultDuration', () => ($('durText').textContent = `${s.calendar.defaultDuration} 分鐘`));
 
-  $('ping').addEventListener('click', async () => {
-    if (!s.todo.webhookUrl) return toast('請先填入連接碼或 Webhook 網址', 'error');
-    try {
-      await todoSync.ping(s);
-      toast('連線成功');
-    } catch (e) {
-      toast(e.message, 'error');
-    }
-  });
-
-  $('copy').addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(ms.redirectUri());
-      toast('已複製重新導向 URI');
-    } catch {
-      toast('無法複製，請手動選取', 'error');
-    }
-  });
-
-  $('login')?.addEventListener('click', async () => {
-    try {
-      await ms.signIn(s, '#/settings');
-    } catch (e) {
-      toast(e.message, 'error');
-    }
-  });
-  $('logout')?.addEventListener('click', () =>
-    sheet([{ label: '登出 Microsoft 帳號', danger: true, run: () => (ms.signOut(), viewSettings()) }])
-  );
-
-  $('loadSections').addEventListener('click', async (e) => {
-    const btn = e.currentTarget;
-    btn.disabled = true;
-    btn.textContent = '載入中…';
-    try {
-      const sections = await ms.listSections(s);
-      $('section').innerHTML =
-        '<option value="">未選擇</option>' +
-        sections.map((x) => `<option value="${esc(x.id)}" ${x.id === s.onenote.sectionId ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
-      if (sections.length) {
-        toast(`找到 ${sections.length} 個分區，請點「分區」選擇`);
-        $('section').focus();
-      } else toast('沒有找到分區，請先在 OneNote 建立', 'error');
-    } catch (err) {
-      toast(err.message, 'error');
-    }
-    btn.disabled = false;
-    btn.textContent = '重新載入分區';
-  });
-  $('section').addEventListener('change', (e) => {
-    s.onenote.sectionId = e.target.value;
-    s.onenote.sectionName = e.target.value ? e.target.selectedOptions[0].textContent : '';
-    save();
-    $('sectionName').textContent = s.onenote.sectionName || '未選擇';
-    e.target.closest('.value-pill').classList.toggle('empty-val', !e.target.value);
-    toast(e.target.value ? '已設定 OneNote 分區' : '已取消 OneNote 分區');
-  });
-
-  $('calModes').addEventListener('click', (e) => {
-    const b = e.target.closest('button[data-mode]');
-    if (!b || b.dataset.mode === s.calendar.mode) return;
-    const before = s.calendar.mode;
-    s.calendar.mode = b.dataset.mode;
-    save();
-    if (s.calendar.mode === 'outlook' && before !== 'outlook' && ms.isSignedIn())
-      toast('需要行事曆權限：請登出後重新登入一次', 'error');
-    if (s.calendar.mode === 'mothership' && !todoSync.mothershipReady(s))
-      toast('還要在上面「待辦事項 → 專案管理工具」貼上 Mothership 連接碼', 'error');
-    const y = window.scrollY;
-    viewSettings();
-    window.scrollTo(0, y);
-  });
-
-  $('retry').addEventListener('click', async () => {
+  byId('retry')?.addEventListener('click', async () => {
     await retryPending();
     toast(pendingCount() ? '仍有項目同步失敗' : '全部同步完成', pendingCount() ? 'error' : 'ok');
-    const y = window.scrollY;
-    viewSettings();
-    window.scrollTo(0, y);
+    rerender(viewSettings);
   });
 
-  $('export').addEventListener('click', () => {
+  byId('export').addEventListener('click', () => {
     const data = JSON.parse(JSON.stringify(db()));
     data.settings.todo.token = ''; // 備份檔不含密碼
     if (data.settings.folio) data.settings.folio.token = '';
@@ -2177,7 +2027,7 @@ function viewSettings() {
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
   });
 
-  $('import').addEventListener('change', async (e) => {
+  byId('import').addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     try {
@@ -2195,6 +2045,250 @@ function viewSettings() {
     } catch {
       toast('檔案格式不正確', 'error');
     }
+  });
+}
+
+function viewSettingsTodo() {
+  const s = settings();
+  const isWebhook = s.todo.webhookUrl && !s.todo.webhookUrl.startsWith('pm1.');
+  settingsPage(
+    '待辦',
+    `
+      <h2 class="group-header">送到 Mothership</h2>
+      <ul class="group icons">
+        <li class="cell">
+          <span class="cell-icon" style="${featureVars('todo')}">${icon('link')}</span>
+          <label class="cell-label field"><span>連接碼</span><input id="webhookUrl" type="text" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="pm1.…" value="${esc(s.todo.webhookUrl)}"></label>
+        </li>
+        <li class="cell" id="tokenRow" ${isWebhook ? '' : 'hidden'}>
+          <span class="cell-icon" style="--c: var(--gray)">${icon('key')}</span>
+          <label class="cell-label field"><span>Webhook Token（選填）</span><input id="token" type="password" autocomplete="off" placeholder="以 Authorization: Bearer 送出" value="${esc(s.todo.token)}"></label>
+        </li>
+        <li><button class="cell action tap" id="ping">測試連線</button></li>
+      </ul>
+      <p class="group-footer">到 Mothership 的「設定 › Beamup」複製連接碼貼上。新增的待辦會進 Mothership 的「待辦」清單（高優先進「急件」），修改、勾選完成也會同步。<br><br>也可以貼一個 Webhook 網址（https://…），Beamup 會 POST JSON 過去，格式見 README。</p>`
+  );
+  bindSetting('webhookUrl', s.todo, 'webhookUrl', () => (byId('tokenRow').hidden = !s.todo.webhookUrl || s.todo.webhookUrl.startsWith('pm1.')));
+  bindSetting('token', s.todo, 'token');
+  byId('ping').addEventListener('click', async () => {
+    if (!s.todo.webhookUrl) return toast('請先貼上連接碼', 'error');
+    try {
+      await todoSync.ping(s);
+      toast('連線成功');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  });
+}
+
+function viewSettingsNotes() {
+  const s = settings();
+  settingsPage(
+    '筆記',
+    `
+      <h2 class="group-header">送到 Folio</h2>
+      <ul class="group icons">
+        <li class="cell">
+          <span class="cell-icon" style="${featureVars('note')}">${icon('book')}</span>
+          <label class="cell-label field"><span>Folio 網址</span><input id="folioUrl" type="url" inputmode="url" placeholder="https://folio.xxx.workers.dev" autocomplete="off" value="${esc(s.folio.url)}"></label>
+        </li>
+        <li class="cell">
+          <span class="cell-icon" style="--c: var(--gray)">${icon('key')}</span>
+          <label class="cell-label field"><span>同步密碼（Folio 的 SYNC_TOKEN）</span><input id="folioToken" type="password" autocomplete="off" value="${esc(s.folio.token)}"></label>
+        </li>
+        <li><button class="cell action tap" id="folioPing">測試連線</button></li>
+      </ul>
+      <p class="group-footer" id="folioStatus" hidden></p>
+      <p class="group-footer">筆記會送到 Folio 的「Beamup › 收件匣」，一篇筆記一頁。修改後再送會更新同一頁，在 Beamup 刪除也會一起刪掉。</p>
+
+      <h2 class="group-header">標籤</h2>
+      <ul class="group icons">
+        ${settingsRow({ href: '#/tags', icon: 'tag', color: featureVars('note'), label: '管理標籤', sub: '改名、刪除' })}
+      </ul>
+
+      <p class="group-footer">想改送 OneNote：先清空上面的 Folio，再到「設定 › Microsoft 帳號」登入並選分區。</p>`
+  );
+  bindSetting('folioUrl', s.folio, 'url');
+  bindSetting('folioToken', s.folio, 'token');
+  byId('folioPing').addEventListener('click', async () => {
+    if (!folio.isConfigured(s)) return toast('請先填 Folio 網址和同步密碼', 'error');
+    const out = byId('folioStatus');
+    out.hidden = false;
+    out.style.color = '';
+    out.textContent = `正在連線 ${folio.baseUrl(s)} …`;
+    try {
+      const n = await folio.ping(s);
+      out.textContent = `✓ 連線成功：${folio.baseUrl(s)}（Folio 裡有 ${n} 筆資料）`;
+      toast(`連線成功（Folio 裡有 ${n} 筆資料）`);
+    } catch (e) {
+      out.style.color = 'var(--danger)';
+      out.textContent = e.message;
+      toast('連線失敗，原因寫在按鈕下方', 'error');
+    }
+  });
+}
+
+function viewSettingsCalendar() {
+  const s = settings();
+  const mode = s.calendar.mode;
+  let extra = '';
+  if (mode === 'shortcut')
+    extra = `
+      <ul class="group icons" style="margin-top:16px">
+        <li class="cell">
+          <span class="cell-icon" style="--c: var(--gray)">${icon('bolt')}</span>
+          <span class="cell-label">捷徑名稱</span>
+          <input id="shortcutName" class="right" style="flex:0 1 50%" value="${esc(s.calendar.shortcutName)}">
+        </li>
+      </ul>
+      <p class="group-footer">iPhone 限制：用捷徑寫入時一定會跳到捷徑 App 一下。不想跳的話改用「Mothership」。</p>`;
+  else if (mode === 'mothership')
+    extra = todoSync.mothershipReady(s)
+      ? `<p class="group-footer">✓ 已連上 Mothership（用「待辦」那裡的連接碼）。行事曆要接哪一個，在 Mothership 的設定裡選。</p>`
+      : `<ul class="group icons">${settingsRow({ href: '#/settings/todo', icon: 'link', color: '--c: var(--warning)', label: '還沒連上 Mothership', sub: '先到「待辦」貼上 Mothership 的連接碼' })}</ul>`;
+  else if (mode === 'outlook')
+    extra = ms.isSignedIn()
+      ? `<p class="group-footer">✓ 已登入 Microsoft：${esc(ms.account())}</p>`
+      : `<ul class="group icons">${settingsRow({ href: '#/settings/microsoft', icon: 'building', color: '--c: #0078D4', label: '還沒登入 Microsoft 帳號', sub: '登入後行程會寫進公司 Outlook' })}</ul>`;
+
+  settingsPage(
+    '行程',
+    `
+      <h2 class="group-header">寫入行事曆的方式</h2>
+      <ul class="group icons" id="calModes">
+        ${CAL_MODES.map(
+          ([id, name, desc, ic]) => `<li><button class="cell tap" data-mode="${id}">
+            <span class="cell-icon" style="${featureVars('event')}">${icon(ic)}</span>
+            <span class="cell-label">${name}<small>${desc}</small></span>
+            ${mode === id ? icon('check', 'checkmark') : ''}
+          </button></li>`
+        ).join('')}
+      </ul>
+      ${extra}
+
+      <h2 class="group-header">預設</h2>
+      <ul class="group icons">
+        <li class="cell">
+          <span class="cell-icon" style="--c: var(--gray)">${icon('timer')}</span>
+          <span class="cell-label">行程長度</span>
+          <label class="value-pill"><span id="durText">${s.calendar.defaultDuration} 分鐘</span>${icon('chevronUpDown')}
+            <select id="duration">${[30, 60, 90, 120].map((m) => `<option value="${m}" ${Number(s.calendar.defaultDuration) === m ? 'selected' : ''}>${m} 分鐘</option>`).join('')}</select>
+          </label>
+        </li>
+      </ul>
+      <p class="group-footer">只寫開始時間時，行程會用這個長度。</p>`
+  );
+  byId('shortcutName') && bindSetting('shortcutName', s.calendar, 'shortcutName');
+  bindSetting('duration', s.calendar, 'defaultDuration', () => (byId('durText').textContent = `${s.calendar.defaultDuration} 分鐘`));
+  byId('calModes').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-mode]');
+    if (!b || b.dataset.mode === s.calendar.mode) return;
+    const before = s.calendar.mode;
+    s.calendar.mode = b.dataset.mode;
+    save();
+    if (s.calendar.mode === 'outlook' && before !== 'outlook' && ms.isSignedIn())
+      toast('需要行事曆權限：請到「Microsoft 帳號」登出後重新登入一次', 'error');
+    rerender(viewSettingsCalendar);
+  });
+}
+
+function viewSettingsMicrosoft() {
+  const s = settings();
+  const signedIn = ms.isSignedIn();
+  settingsPage(
+    'Microsoft 帳號',
+    `
+      <p class="group-footer" style="margin-top:0">只有行程選「公司 Outlook」或筆記要送 OneNote 時才需要。</p>
+      <h2 class="group-header">帳號</h2>
+      <ul class="group icons">
+        ${
+          signedIn
+            ? `<li class="cell"><span class="cell-icon" style="--c: var(--todo); --on-c: var(--on-todo)">${icon('person')}</span>
+                 <span class="cell-label">已登入<small>${esc(ms.account())}</small></span></li>
+               <li><button class="cell action danger tap" id="logout">登出</button></li>`
+            : `<li><button class="cell action tap" id="login">登入 Microsoft 帳號</button></li>`
+        }
+      </ul>
+
+      <h2 class="group-header">OneNote 分區</h2>
+      <ul class="group icons">
+        <li class="cell">
+          <span class="cell-icon" style="--c: #7719AA">${icon('book')}</span>
+          <span class="cell-label">分區</span>
+          <label class="value-pill ${s.onenote.sectionId ? '' : 'empty-val'}" style="max-width:55%">
+            <span id="sectionName" style="overflow:hidden;text-overflow:ellipsis">${esc(s.onenote.sectionName || '未選擇')}</span>${icon('chevronUpDown')}
+            <select id="section" ${signedIn ? '' : 'disabled'}>
+              ${s.onenote.sectionId ? `<option value="${esc(s.onenote.sectionId)}">${esc(s.onenote.sectionName)}</option>` : '<option value="">未選擇</option>'}
+            </select>
+          </label>
+        </li>
+        <li><button class="cell action tap" id="loadSections" ${signedIn ? '' : 'disabled'}>${signedIn ? '載入我的筆記本分區' : '登入後即可選擇分區'}</button></li>
+      </ul>
+      ${folio.isConfigured(s) ? '<p class="group-footer">目前筆記送到 Folio；設定了 Folio 就不會送 OneNote。</p>' : ''}
+
+      <h2 class="group-header">App 註冊資訊（Azure）</h2>
+      <ul class="group icons">
+        <li class="cell">
+          <span class="cell-icon" style="--c: #0078D4">${icon('key')}</span>
+          <label class="cell-label field"><span>Application (client) ID</span><input id="clientId" placeholder="xxxxxxxx-xxxx-…" autocomplete="off" value="${esc(s.microsoft.clientId)}"></label>
+        </li>
+        <li class="cell">
+          <span class="cell-icon" style="--c: var(--gray)">${icon('building')}</span>
+          <label class="cell-label field"><span>租用戶（公司網域或 Tenant ID）</span><input id="tenant" placeholder="organizations" autocomplete="off" value="${esc(s.microsoft.tenant)}"></label>
+        </li>
+        <li><button class="cell tap" id="copy">
+          <span class="cell-icon" style="--c: var(--gray)">${icon('copy')}</span>
+          <span class="cell-label">重新導向 URI<small>${esc(ms.redirectUri())}</small></span>
+        </button></li>
+      </ul>
+      <p class="group-footer">在 Azure 註冊 App 的步驟見 README。</p>`
+  );
+  bindSetting('clientId', s.microsoft, 'clientId');
+  bindSetting('tenant', s.microsoft, 'tenant');
+  byId('copy').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(ms.redirectUri());
+      toast('已複製重新導向 URI');
+    } catch {
+      toast('無法複製，請手動選取', 'error');
+    }
+  });
+  byId('login')?.addEventListener('click', async () => {
+    try {
+      await ms.signIn(s, '#/settings/microsoft');
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  });
+  byId('logout')?.addEventListener('click', () =>
+    sheet([{ label: '登出 Microsoft 帳號', danger: true, run: () => (ms.signOut(), viewSettingsMicrosoft()) }])
+  );
+  byId('loadSections').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    btn.textContent = '載入中…';
+    try {
+      const sections = await ms.listSections(s);
+      byId('section').innerHTML =
+        '<option value="">未選擇</option>' +
+        sections.map((x) => `<option value="${esc(x.id)}" ${x.id === s.onenote.sectionId ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
+      if (sections.length) {
+        toast(`找到 ${sections.length} 個分區，請點「分區」選擇`);
+        byId('section').focus();
+      } else toast('沒有找到分區，請先在 OneNote 建立', 'error');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+    btn.disabled = false;
+    btn.textContent = '重新載入分區';
+  });
+  byId('section').addEventListener('change', (e) => {
+    s.onenote.sectionId = e.target.value;
+    s.onenote.sectionName = e.target.value ? e.target.selectedOptions[0].textContent : '';
+    save();
+    byId('sectionName').textContent = s.onenote.sectionName || '未選擇';
+    e.target.closest('.value-pill').classList.toggle('empty-val', !e.target.value);
+    toast(e.target.value ? '已設定 OneNote 分區' : '已取消 OneNote 分區');
   });
 }
 
@@ -2216,6 +2310,10 @@ const routes = [
   [/^#\/appearance$/, viewAppearance],
   [/^#\/tags$/, viewTags],
   [/^#\/settings$/, viewSettings],
+  [/^#\/settings\/todo$/, viewSettingsTodo],
+  [/^#\/settings\/notes$/, viewSettingsNotes],
+  [/^#\/settings\/calendar$/, viewSettingsCalendar],
+  [/^#\/settings\/microsoft$/, viewSettingsMicrosoft],
 ];
 
 function render() {
