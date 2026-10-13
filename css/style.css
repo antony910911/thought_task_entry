@@ -507,6 +507,27 @@ input, textarea, select { outline: none; }
   box-shadow: 3px 3px 0 color-mix(in srgb, var(--label) 18%, transparent);
   animation: bubble-in 0.25s steps(3) both;
 }
+/* 石墨配色的宇宙舞台 */
+.stage.cosmos { height: 240px; background: #070a14; }
+.cosmos-canvas { height: 240px; touch-action: none; cursor: grab; }
+.cosmos-canvas:active { cursor: grabbing; }
+.cosmos-ui { position: absolute; left: 8px; right: 8px; bottom: 8px; display: flex; justify-content: space-between; pointer-events: none; }
+.cz-btn {
+  pointer-events: auto;
+  min-width: 32px;
+  height: 28px;
+  padding: 0 10px;
+  border: 2px solid rgba(255, 255, 255, 0.55);
+  border-radius: 4px;
+  background: rgba(10, 12, 24, 0.72);
+  color: #fff;
+  font: 700 12px 'Pixelify Sans', -apple-system, sans-serif;
+  letter-spacing: 0.02em;
+  -webkit-tap-highlight-color: transparent;
+}
+.cz-btn.on { border-color: #ffd60a; color: #ffd60a; }
+.cz-btn:active { transform: translate(1px, 1px); }
+.stage.cosmos .blip-bubble { white-space: normal; max-width: 78%; }
 @keyframes bubble-in { from { transform: scale(0.6); opacity: 0; } }
 .stage-cap {
   display: flex;
@@ -517,7 +538,8 @@ input, textarea, select { outline: none; }
   color: var(--label-2);
   border-top: 0.5px solid var(--sep);
 }
-.stage-cap b { font-family: 'Pixelify Sans', -apple-system, sans-serif; font-weight: 700; font-size: 15px; color: var(--label); }
+.stage-cap #blipStatus { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stage-cap b { white-space: nowrap; font-family: 'Pixelify Sans', -apple-system, sans-serif; font-weight: 700; font-size: 15px; color: var(--label); }
 .stage-cap .pokes { margin-left: auto; font-variant-numeric: tabular-nums; }
 
 /* ---------- 待辦 ---------- */

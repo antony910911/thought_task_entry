@@ -13,6 +13,8 @@ const FILES = [
   './js/icons.js',
   './js/themes.js',
   './js/mascot.js',
+  './js/cosmos.js',
+  './js/astro.js',
   './js/aliens.js',
   './js/capture.js',
   './js/pet.js',

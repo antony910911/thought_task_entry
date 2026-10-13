@@ -3,6 +3,7 @@ import { parseEvent, formatRange, formatDate, formatTime } from './parser.js';
 import { icon } from './icons.js';
 import { THEMES, MODES, themeById, applyTheme, effectiveMode } from './themes.js';
 import { mountMascot, queueCheer, drawAlienPreview, drawAccessory } from './mascot.js';
+import { mountCosmos } from './cosmos.js';
 import { classify } from './capture.js';
 import { visit as petVisit, gain as petGain, energyNow, mood as petMood, levelInfo, ACCESSORIES, GAINS, MOOD_TEXT } from './pet.js';
 import { ALIENS, character } from './aliens.js';
@@ -625,6 +626,10 @@ function bindCapture(refreshHome) {
   }
 }
 
+/** 石墨配色＋宇宙舞台打開時，首頁的外星人換成日地月／九大行星 */
+const cosmosOn = () => settings().appearance.theme === 'graphite' && settings().appearance.space !== false;
+const SPACE_VIEWS = { moon: '日地月', planets: '九大行星' };
+
 function viewHome() {
   const now = new Date();
   const todos = db().todos;
@@ -648,7 +653,11 @@ function viewHome() {
       <section class="stage-card" aria-label="Blip">
         <div class="stage" id="stage"></div>
         <div class="stage-cap">
-          <button class="alien-switch" id="alienSwitch" aria-label="換外星人"><b>${esc(character(settings().appearance.alien).name)}</b>${icon('chevronUpDown')}</button>
+          ${
+            cosmosOn()
+              ? `<button class="alien-switch" id="spaceSwitch" aria-label="切換日地月／九大行星"><b>${SPACE_VIEWS[settings().appearance.spaceView] || '日地月'}</b>${icon('chevronUpDown')}</button>`
+              : `<button class="alien-switch" id="alienSwitch" aria-label="換外星人"><b>${esc(character(settings().appearance.alien).name)}</b>${icon('chevronUpDown')}</button>`
+          }
           <span id="blipStatus"></span>
           <a class="pet-link" id="petChip" href="#/pet" aria-label="小屋">${petChip()}</a>
         </div>
@@ -705,7 +714,17 @@ function viewHome() {
   const focusEl = document.getElementById('focus');
   if (focusEl) bindTodoList(focusEl, viewHome);
 
-  const mascot = mountMascot(document.getElementById('stage'), {
+  const homeLines = () => {
+    const list = [];
+    const openNow = db().todos.filter((t) => !t.done);
+    const overdue = openNow.filter((t) => t.due && dueInfo(t.due).diff < 0).length;
+    if (overdue) list.push(`有 ${overdue} 件待辦逾期了！`);
+    list.push(openNow.length ? `還有 ${openNow.length} 件待辦，加油！` : '待辦都清空了，好厲害！');
+    return list;
+  };
+  const mascot = cosmosOn()
+    ? mountCosmos(document.getElementById('stage'), { view: settings().appearance.spaceView, status: document.getElementById('blipStatus'), lines: homeLines })
+    : mountMascot(document.getElementById('stage'), {
     alien: settings().appearance.alien,
     onSwap: (id) => {
       const name = document.querySelector('#alienSwitch b');
@@ -743,7 +762,14 @@ function viewHome() {
   try {
     if (localStorage.getItem('beamup.debug')) window.beamupMascot = mascot; // 除錯：在主控台呼叫 beamupMascot.play('ride')
   } catch {}
-  document.getElementById('alienSwitch').addEventListener('click', async () => {
+  document.getElementById('spaceSwitch')?.addEventListener('click', (e) => {
+    const ap = settings().appearance;
+    ap.spaceView = ap.spaceView === 'planets' ? 'moon' : 'planets';
+    save();
+    mascot.setView(ap.spaceView);
+    e.currentTarget.querySelector('b').textContent = SPACE_VIEWS[ap.spaceView];
+  });
+  document.getElementById('alienSwitch')?.addEventListener('click', async () => {
     const id = await alienPicker(settings().appearance.alien);
     if (!id || id === settings().appearance.alien) return;
     settings().appearance.alien = id;
@@ -1955,6 +1981,18 @@ function viewAppearance() {
         }).join('')}
       </div>
       <p class="group-footer">配色只套用在 App 內；主畫面圖示不會改變。</p>
+
+      <div id="spaceOpt" ${ap.theme === 'graphite' ? '' : 'hidden'}>
+        <h2 class="group-header">石墨限定</h2>
+        <ul class="group icons">
+          <li class="cell">
+            <span class="cell-icon" style="--c: #1C1C1E">${icon('sun')}</span>
+            <label class="cell-label" for="spaceOn">宇宙舞台<small>首頁的外星人換成真實位置的日、地、月和九大行星</small></label>
+            <input type="checkbox" class="switch" id="spaceOn" ${ap.space !== false ? 'checked' : ''}>
+          </li>
+        </ul>
+        <p class="group-footer">拖曳轉視角、雙指縮放、點兩下回到原位；戳星球會有反應。左下角的時光機可以快轉時間看月相和行星公轉。</p>
+      </div>
     </main>`;
 
   document.getElementById('modes').addEventListener('click', (e) => {
@@ -1964,6 +2002,10 @@ function viewAppearance() {
     save();
     applyTheme(ap);
     viewAppearance();
+  });
+  document.getElementById('spaceOn').addEventListener('change', (e) => {
+    ap.space = e.target.checked;
+    save();
   });
   paintAlienCards($app);
   document.getElementById('aliens').addEventListener('click', (e) => {
@@ -1981,6 +2023,8 @@ function viewAppearance() {
     save();
     applyTheme(ap);
     document.querySelectorAll('.swatch').forEach((x) => x.classList.toggle('on', x === b));
+    document.getElementById('spaceOpt').hidden = ap.theme !== 'graphite';
+    if (ap.theme === 'graphite' && ap.space !== false) toast('首頁變成宇宙舞台了，回首頁看看');
   });
 }
 

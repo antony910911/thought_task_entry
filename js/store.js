@@ -28,7 +28,7 @@ const DEFAULTS = {
     onenote: { sectionId: '', sectionName: '' },
     folio: { url: '', token: '' },
     calendar: { mode: 'shortcut', shortcutName: '加入行程', defaultDuration: 60 },
-    appearance: { theme: 'classic', mode: 'auto', alien: 'blip' },
+    appearance: { theme: 'classic', mode: 'auto', alien: 'blip', space: true, spaceView: 'moon' },
     reminders: { enabled: false, shortcutName: '加入提醒', time: '09:00' },
   },
 };
