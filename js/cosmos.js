@@ -249,6 +249,8 @@ export function mountCosmos(stage, opts = {}) {
   const cam = { yaw: 0, pitch: 55 * RAD, scale: 6, tx: 0, ty: 0, tz: 0 };
   const want = { ...cam };
   let focus = null; // 正在跟著的星球
+  let faceDir = V(0, -1, 0.3); // 大家的臉都朝著預設視角（轉視角就會看到側臉、後腦勺）
+  let faceCam = { yaw: 0, pitch: 0.5 };
   let bodies = [];
   let drawn = []; // 最後畫出來的那一幀（有螢幕位置），點擊判斷用
   let orbits = {};
@@ -272,9 +274,9 @@ export function mountCosmos(stage, opts = {}) {
       const moonDir = eclDir(m.lon, m.lat);
       const g = gmst(date);
       const ecl = eclipse(date);
-      list.push({ id: 'sun', pos: mul(sunDir, 8.5), r: 2.2, emissive: true, spin: (t / BODY.sun.period) * TAU });
-      list.push({ id: 'earth', pos: V(0, 0, 0), r: 1.25, light: sunDir, earth: g, home: true });
-      list.push({ id: 'moon', pos: mul(moonDir, 3.3), r: 0.72, light: sunDir, faceEarth: true, tint: ecl === 'lunar' ? [190, 70, 40] : null, eclipse: ecl });
+      list.push({ id: 'sun', pos: mul(sunDir, 9), r: 2.4, emissive: true, spin: (t / BODY.sun.period) * TAU });
+      list.push({ id: 'earth', pos: V(0, 0, 0), r: 1.6, light: sunDir, earth: g, home: true });
+      list.push({ id: 'moon', pos: mul(moonDir, 3.6), r: 0.85, light: sunDir, faceEarth: true, tint: ecl === 'lunar' ? [190, 70, 40] : null, eclipse: ecl });
     } else {
       list.push({ id: 'sun', pos: V(0, 0, 0), r: 2.0, emissive: true, spin: (t / BODY.sun.period) * TAU });
       for (const id of ORDER) {
@@ -342,8 +344,9 @@ export function mountCosmos(stage, opts = {}) {
     const c = { yaw: 0, pitch: 55 * RAD, scale: 1, tx: 0, ty: 0, tz: 0 };
     if (view === 'moon') {
       const sun = list.find((b) => b.id === 'sun');
-      c.yaw = Math.atan2(sun.pos.y, sun.pos.x) + Math.PI; // 太陽放左邊
-      c.pitch = 50 * RAD;
+      // 太陽在左邊；視角稍微偏向太陽那側，看到的地球、月亮大多是亮的
+      c.yaw = Math.atan2(sun.pos.y, sun.pos.x) + Math.PI - 35 * RAD;
+      c.pitch = 26 * RAD;
     } else {
       c.yaw = -90 * RAD;
       c.pitch = 58 * RAD;
@@ -357,7 +360,7 @@ export function mountCosmos(stage, opts = {}) {
       const x = q.sx - W / 2 + ox, y = q.sy - H / 2 + oy;
       minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y);
     }
-    const scale = Math.min((W - 8) / (maxX - minX || 1), (H - 12) / (maxY - minY || 1));
+    const scale = Math.min((W - 10) / (maxX - minX || 1), (H - 26) / (maxY - minY || 1));
     // 把中心移到外框中間：先算出外框中心對應的世界座標
     const midX = (minX + maxX) / 2, midY = (minY + maxY) / 2;
     const cy = Math.cos(c.yaw), sy = Math.sin(c.yaw), sp = Math.sin(c.pitch);
@@ -369,9 +372,15 @@ export function mountCosmos(stage, opts = {}) {
     return c;
   }
 
+  /** 相機所在的方向（從場景指向你） */
+  const viewerDir = (c) => V(Math.cos(c.pitch) * Math.sin(c.yaw), -Math.cos(c.pitch) * Math.cos(c.yaw), Math.sin(c.pitch));
+
   function resetView(immediate = false) {
     focus = null;
     const c = defaultView();
+    const vd = viewerDir(c);
+    faceDir = vd;
+    faceCam = { yaw: c.yaw, pitch: c.pitch };
     Object.assign(want, c);
     if (immediate) Object.assign(cam, c);
   }
@@ -514,6 +523,10 @@ export function mountCosmos(stage, opts = {}) {
     const x0 = Math.max(0, Math.floor(b.sx - pr - 1)), x1 = Math.min(W - 1, Math.ceil(b.sx + pr + 1));
     const y0 = Math.max(0, Math.floor(b.sy - pr - 1)), y1 = Math.min(H - 1, Math.ceil(b.sy + pr + 1));
     const vd = viewDir();
+    const ff = pr >= 4.5 ? faceFrame() : null;
+    b.face = ff;
+    const expr = ff ? expression(b, now) : null;
+    const blush = !!(an && (an.cheeks || an.expr === 'happy'));
     for (let y = y0; y <= y1; y++) {
       for (let x = x0; x <= x1; x++) {
         const dx = (x + 0.5 - b.sx) / pr, dy = -(y + 0.5 - b.sy) / pr;
@@ -525,6 +538,13 @@ export function mountCosmos(stage, opts = {}) {
         if (zbuf[i] > depth) continue;
         const n = toWorld(dx, dy, nz);
         let c = surfaceColor(b, n, t);
+        if (ff && dot(n, ff.F) > 0.05) {
+          const fu = dot(n, ff.R), fv = dot(n, ff.U);
+          // 地球表面很花，臉的位置淡淡地刷亮一點，五官才看得清楚
+          if (b.id === 'earth' && fu * fu + fv * fv < 0.5) c = mix(c, [90, 160, 230], 0.35);
+          const fc = faceColor(fu, fv, expr, pr, blush);
+          if (fc) c = mix(c, fc.c, fc.a);
+        }
         if (b.emissive) {
           const limb = 0.72 + 0.28 * nz;
           c = c.map((v) => Math.min(255, v * limb * (an && an.type === 'flare' ? 1.15 : 1)));
@@ -542,6 +562,7 @@ export function mountCosmos(stage, opts = {}) {
         idbuf[i] = idx;
       }
     }
+    if (expr === 'sleep' && Math.floor(now / 900) % 3 === 0 && Math.random() < 0.15) spawn('z', b.sx + pr * 0.8, b.sy - pr, 1, 3);
     if (b.emissive) drawCorona(b, pr, now);
     if (b.def.ring) drawRing(b, idx, r, pr);
     if (b.home) drawHome(b, r, pr, vd, now);
@@ -621,15 +642,6 @@ export function mountCosmos(stage, opts = {}) {
 
   // ---------- 表情和手 ----------
 
-  const INK = [24, 20, 30];
-  const PALE = [205, 205, 220];
-  function inkAt(x, y, idx) {
-    if (x < 0 || y < 0 || x >= W || y >= H || idbuf[y * W + x] !== idx) return null;
-    const i = (y * W + x) * 4;
-    const lum = buf[i] * 0.3 + buf[i + 1] * 0.59 + buf[i + 2] * 0.11;
-    return lum < 70 ? PALE : INK;
-  }
-
   function expression(b, now) {
     const st = b.st;
     const an = st.anim;
@@ -642,65 +654,106 @@ export function mountCosmos(stage, opts = {}) {
     return 'normal';
   }
 
-  function drawFace(b, idx, now) {
-    const pr = b.pr;
-    if (pr < 3.6) return;
-    const big = pr >= 10;
-    const cx = Math.round(b.sx), cy = Math.round(b.sy);
-    const ex = Math.max(1, Math.round(pr * 0.36));
-    const ey = cy - Math.max(1, Math.round(pr * 0.16));
-    const my = cy + Math.max(1, Math.round(pr * 0.3));
-    const expr = expression(b, now);
-    const dot1 = (x, y, c) => {
-      const ink = inkAt(x, y, idx);
-      if (ink) put(x, y, c || ink);
-    };
-    const shape = (pts, ox, oy, c) => pts.forEach(([dx, dy]) => dot1(ox + dx, oy + dy, c));
+  // 臉畫在星球表面上（固定朝某個方向），跟著打光、跟著視角轉；u、v 是臉部平面上的座標（星球半徑 = 1）
+  const FACE_INK = [52, 30, 48];
+  const WHITE = [255, 255, 255];
+  const BLUSH = [255, 120, 156];
+  const TONGUE = [255, 112, 128];
 
-    const EYES = {
-      normal: big ? [[0, 0], [1, 0], [0, 1], [1, 1]] : [[0, 0]],
-      blink: big ? [[-1, 1], [0, 1], [1, 1]] : [[0, 0], [1, 0]],
-      sleep: big ? [[-1, 0], [0, 1], [1, 1], [2, 0]] : [[0, 0], [1, 0]],
-      happy: big ? [[-1, 1], [0, 0], [1, 0], [2, 1]] : [[-1, 0], [0, -1], [1, 0]],
-      surprised: big ? [[0, -1], [1, -1], [-1, 0], [2, 0], [-1, 1], [2, 1], [0, 2], [1, 2]] : [[0, 0], [0, -1]],
-      dizzy: [[-1, -1], [1, -1], [0, 0], [-1, 1], [1, 1]],
-    };
-    const MOUTH = {
-      smile: big ? [[-2, 0], [-1, 1], [0, 1], [1, 1], [2, 0]] : [[-1, 0], [0, 1], [1, 0]],
-      open: big ? [[-1, 0], [0, 0], [1, 0], [-1, 1], [1, 1], [-1, 2], [0, 2], [1, 2]] : [[0, 0], [0, 1]],
-      flat: big ? [[-1, 0], [0, 0], [1, 0]] : [[0, 0], [1, 0]],
-      wavy: big ? [[-2, 0], [-1, 1], [0, 0], [1, 1], [2, 0]] : [[-1, 0], [0, 1], [1, 0]],
-      grin: big ? [[-2, 0], [2, 0], [-2, 1], [-1, 1], [0, 1], [1, 1], [2, 1], [-1, 2], [0, 2], [1, 2]] : [[-1, 0], [0, 0], [1, 0], [0, 1]],
-    };
-    const eyeL = cx - ex - (big ? 1 : 0), eyeR = cx + ex;
-    const ekind = { normal: 'normal', blink: 'blink', sleep: 'sleep', happy: 'happy', surprised: 'surprised', dizzy: 'dizzy', wink: 'normal', cool: 'normal' }[expr] || 'normal';
-    if (expr === 'cool') {
-      // 太陽戴墨鏡
-      for (let x = eyeL - 2; x <= eyeR + (big ? 3 : 2); x++) dot1(x, ey, INK);
-      for (const ox of [eyeL, eyeR]) for (let dx = -1; dx <= (big ? 2 : 1); dx++) for (let dy = 0; dy <= (big ? 2 : 1); dy++) dot1(ox + dx, ey + dy, INK);
-      dot1(eyeL, ey + 1, [255, 255, 255]);
-    } else {
-      shape(EYES[ekind], eyeL, ey);
-      shape(expr === 'wink' ? EYES.happy : EYES[ekind], eyeR, ey);
-      if (big && ekind === 'normal') {
-        dot1(eyeL, ey, [255, 255, 255]);
-        if (expr !== 'wink') dot1(eyeR, ey, [255, 255, 255]);
+  /** 臉固定朝著預設視角的方向（世界座標，不會跟著你轉） */
+  function faceFrame() {
+    const F = faceDir;
+    let U = sub(V(0, 0, 1), mul(F, F.z));
+    if (len(U) < 1e-3) U = V(0, 1, 0);
+    U = unit(U);
+    return { F, U, R: cross(U, F) };
+  }
+
+  function faceColor(u, v, expr, pr, blush) {
+    const px = 1 / pr;
+    const er = Math.max(0.17, 2.1 * px); // 眼睛半徑
+    const ex = 0.33, ey = 0.04;
+    const th = Math.max(0.05, 0.95 * px); // 線條粗細
+    const mr = Math.max(0.14, 2.2 * px); // 嘴巴大小
+    // 眼睛
+    for (const side of [-1, 1]) {
+      const du = u - side * ex, dv = v - ey;
+      if (Math.abs(du) > er * 1.5 || Math.abs(dv) > er * 1.5) continue;
+      const kind = expr === 'wink' && side === 1 ? 'happy' : expr;
+      const d2 = du * du + dv * dv;
+      switch (kind) {
+        case 'cool': {
+          if (Math.abs(du) < er * 1.3 && dv < er * 0.75 && dv > -er * 0.9 && (du * du) / (er * er * 1.69) + (Math.min(0, dv) ** 2) / (er * er * 0.81) < 1)
+            return { c: Math.abs(du + dv * 0.8 - er * 0.3) < th * 0.6 ? [120, 120, 140] : [20, 18, 26], a: 1 };
+          break;
+        }
+        case 'blink':
+          if (Math.abs(du) < er && Math.abs(dv) < th / 2) return { c: FACE_INK, a: 1 };
+          break;
+        case 'sleep': // ‿ 閉眼
+          if (Math.abs(du) < er && Math.abs(dv - ((0.9 * du * du) / er - 0.25 * er)) < th * 0.6) return { c: FACE_INK, a: 1 };
+          break;
+        case 'happy': // ^ 笑眼
+          if (Math.abs(du) < er && Math.abs(dv - (0.35 * er - (1.1 * du * du) / er)) < th * 0.6) return { c: FACE_INK, a: 1 };
+          break;
+        case 'dizzy':
+          if (Math.abs(du) < er * 0.95 && Math.abs(dv) < er * 0.95 && Math.abs(Math.abs(du) - Math.abs(dv)) < th * 0.7) return { c: FACE_INK, a: 1 };
+          break;
+        default: {
+          const r = kind === 'surprised' ? er * 1.15 : er;
+          if (d2 < r * r) {
+            // 大大的亮晶晶眼睛：一大一小兩個反光
+            if ((du + 0.32 * r) ** 2 + (dv - 0.32 * r) ** 2 < (0.4 * r) ** 2) return { c: WHITE, a: 1 };
+            if ((du - 0.35 * r) ** 2 + (dv + 0.35 * r) ** 2 < (0.2 * r) ** 2) return { c: WHITE, a: 1 };
+            return { c: FACE_INK, a: 1 };
+          }
+        }
       }
     }
-    const mouth = { surprised: 'open', dizzy: 'wavy', sleep: 'flat', happy: 'grin', wink: 'smile', cool: 'smile' }[expr] || 'smile';
-    shape(MOUTH[mouth], cx, my);
-    if ((b.st.anim && b.st.anim.cheeks) || expr === 'happy') {
-      for (const ox of [eyeL - 1, eyeR + (big ? 2 : 1)]) {
-        dot1(ox, my - 1, [255, 120, 150]);
-        if (big) dot1(ox + 1, my - 1, [255, 120, 150]);
+    if (expr === 'cool' && Math.abs(v - ey - er * 0.3) < th / 2 && Math.abs(u) < ex) return { c: [20, 18, 26], a: 1 };
+    // 嘴巴
+    const my = -0.17;
+    switch ({ surprised: 'open', dizzy: 'wavy', sleep: 'tiny', happy: 'grin', wink: 'cat', cool: 'smile', blink: 'cat' }[expr] || 'cat') {
+      case 'grin': {
+        // D 字張嘴笑，裡面有舌頭
+        const d = Math.hypot(u, v - my);
+        if (v < my && d < mr * 1.25) return { c: Math.hypot(u, v - (my - mr * 0.85)) < mr * 0.55 ? TONGUE : FACE_INK, a: 1 };
+        break;
+      }
+      case 'open':
+        if ((u / (mr * 0.75)) ** 2 + ((v - my + mr * 0.2) / mr) ** 2 < 1) return { c: FACE_INK, a: 1 };
+        break;
+      case 'tiny':
+        if (Math.abs(v - my) < th / 2 && Math.abs(u) < mr * 0.5) return { c: FACE_INK, a: 1 };
+        break;
+      case 'wavy':
+        if (Math.abs(u) < mr * 1.3 && Math.abs(v - my - mr * 0.25 * Math.sin((u / mr) * 5)) < th / 2) return { c: FACE_INK, a: 1 };
+        break;
+      case 'smile': {
+        const d = Math.hypot(u, v - my - mr * 0.6);
+        if (v < my + mr * 0.2 && Math.abs(d - mr) < th / 2) return { c: FACE_INK, a: 1 };
+        break;
+      }
+      default: {
+        // ω 貓咪嘴
+        for (const s of [-1, 1]) {
+          const cx = s * mr * 0.55;
+          const d = Math.hypot(u - cx, v - my);
+          if (v < my + th * 0.3 && Math.abs(d - mr * 0.55) < th / 2) return { c: FACE_INK, a: 1 };
+        }
       }
     }
-    if (expr === 'sleep' && Math.floor(now / 900) % 3 === 0) spawn('z', b.sx + pr * 0.8, b.sy - pr, 1);
+    // 腮紅（一直都有，被戳時更紅）
+    for (const s of [-1, 1]) {
+      const bu = (u - s * 0.56) / Math.max(0.13, 1.6 * px), bv = (v + 0.08) / Math.max(0.08, 1.1 * px);
+      if (bu * bu + bv * bv < 1) return { c: BLUSH, a: blush ? 0.85 : 0.5 };
+    }
+    return null;
   }
 
   function drawArms(b, idx, now) {
     const pr = b.pr;
-    if (pr < 3.6) return;
+    if (pr < 4.5 || !b.face || dot(b.face.F, viewDir()) < 0.15) return;
     const an = b.st.anim;
     const big = pr >= 10;
     const L = big ? 3 : 2;
@@ -857,6 +910,12 @@ export function mountCosmos(stage, opts = {}) {
     if ((b.pr || 0) < 7) {
       focus = b.id;
       want.scale = clamp(13 / b.r, want.fit * 0.5, want.fit * 40);
+      // 轉回看得到臉的角度
+      let yaw = faceCam.yaw;
+      while (yaw - want.yaw > Math.PI) yaw -= TAU;
+      while (yaw - want.yaw < -Math.PI) yaw += TAU;
+      want.yaw = yaw;
+      want.pitch = faceCam.pitch;
     }
     if (st.pokes >= 4) {
       st.anim = { type: 'dizzy', t: 0, dur: 1.6, expr: 'dizzy' };
@@ -1043,14 +1102,13 @@ export function mountCosmos(stage, opts = {}) {
     } else {
       const moonOrbit = [];
       const m = moonPosition(date);
-      for (let i = 0; i < 90; i++) moonOrbit.push(mul(eclDir(m.lon + i * 4, m.lat * Math.cos(i * 4 * RAD)), 3.3));
+      for (let i = 0; i < 90; i++) moonOrbit.push(mul(eclDir(m.lon + i * 4, m.lat * Math.cos(i * 4 * RAD)), 3.6));
       drawOrbit(moonOrbit, [80, 86, 110], 3);
     }
     bodies.forEach((b, i) => drawBody(b, i, t, now));
     drawn = bodies;
     bodies.forEach((b, i) => {
       drawArms(b, i, now);
-      drawFace(b, i, now);
     });
     // 太陽跑出畫面時，在邊邊畫一個箭頭指過去
     const sun = bodies.find((b) => b.id === 'sun');
